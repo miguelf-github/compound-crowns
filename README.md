@@ -30,6 +30,23 @@ The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
 **US companies that sell worldwide.** The universe is US-listed companies, but a business that sells only in the US is concentrated in a single market, so US-only revenue costs a point and broad international sales earn up to two. The share comes from the geographic revenue table tagged in each company's latest 10-K (or geographic business segments, such as Aflac Japan). A company with no geographic disclosure is treated as US-only and flagged.
 
+**Yield rule.** A yield under 1.5% takes too long to compound into meaningful income, so such a company can only be selected if its 10-year dividend growth is 10% or more (the −1 yield point still applies). Today that keeps fast growers like Parker-Hannifin and Sherwin-Williams eligible and blocks slower ones like Linde and Caterpillar.
+
+### How it lines up with Nanalyze's six factors
+
+Compound Crowns follows the six factors Nanalyze describes in [How to Consistently Find Dividend Growth Stocks You Can Hold Forever](https://www.youtube.com/watch?v=lmAjhv2edyE):
+
+| Nanalyze factor | Compound Crowns |
+|---|---|
+| Track record: 25+ year streaks, longer is better | Dividend Champions universe; streak points 1–3 |
+| Size: favor large, drop the smaller half | Below-median market cap dropped; size points 0–2 |
+| International sales rewarded, US-only penalized | 10-K geographic revenue; −1 to +2 |
+| Yield: under ~1.5% is too low | −1 point, and a selection block unless 10-yr growth ≥ 10% |
+| Dividend growth: 5-yr > ~5%, 10-yr > ~4%, 10-yr counts more | 5-yr up to 2 points, 10-yr up to 3 |
+| Payout: low is a buffer, ~90%+ penalized | Dividends ÷ FCF; < 60% = +1, ≥ 90% = −2 |
+
+Our additions, not in Nanalyze's method: the value check on entry (yield vs. its 5-year average), the sell rules, the dividend ledger, and this version's custom choices below.
+
 ### Monthly rules
 
 - **Buying:** each stock targets an equal weight (99% of equity ÷ 30). Normal runs buy one sixth of the target per month, scaled by a value check: yield vs. the stock's own 5-year average yield (cheap = 2×, fair = 1×, slightly rich = ½×, expensive = skip; a 6-month time stop buys anyway).

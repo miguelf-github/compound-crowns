@@ -59,6 +59,11 @@ SECTORS_TO_HOLD = [
 ]
 FREEZE_MONTHS = 15
 MAX_DPS_AGE_DAYS = 270  # older SEC per-share dividend data counts as missing
+# Yield rule (Nanalyze: very low yields take too long to compound into meaningful income). A company yielding
+# under YIELD_FLOOR can only be selected if its 10-yr dividend growth is at least LOW_YIELD_MIN_DGR10.
+# It still takes the -1 yield point in the Crown-score either way.
+YIELD_FLOOR = 0.015
+LOW_YIELD_MIN_DGR10 = 0.10
 # User rule: these always take the high-payout penalty (-2), whatever the computed ratio.
 PAYOUT_PENALTY_OVERRIDES = {
     "XOM": "known high payout ratio (user rule)",
@@ -444,9 +449,23 @@ def intl_sales(session, cik):
 
 # ---------- selection (methodology Step 3) ----------
 
+def yield_block(yld, dgr10):
+    """Reason a company can't be selected on yield, or '' if it can.
+
+    A very low yield takes too long to compound into meaningful income, so it's only acceptable when the
+    dividend is growing at double digits over 10 years (the consistency measure).
+    """
+    if yld is not None and yld < YIELD_FLOOR and dgr10 < LOW_YIELD_MIN_DGR10:
+        return f"yield {yld:.1%} < {YIELD_FLOOR:.1%} without {LOW_YIELD_MIN_DGR10:.0%}+ 10-yr dividend growth"
+    return ""
+
+
 def select_portfolio(ranked):
-    """Best name in every sector we hold (pass 1), then fill by rank under the sector cap (pass 2)."""
-    pool = [r for r in ranked if r["sector"] in SECTORS_TO_HOLD]
+    """Best name in every sector we hold (pass 1), then fill by rank under the sector cap (pass 2).
+
+    Companies blocked by the yield rule are skipped.
+    """
+    pool = [r for r in ranked if r["sector"] in SECTORS_TO_HOLD and not r.get("blocked")]
     selected, per_sector = [], {}
     for r in pool:
         if r["sector"] not in per_sector:
@@ -590,7 +609,8 @@ def main():
             "ttm_dps": None if ttm_dps is None else round(ttm_dps, 4), "dps_basis": dps_basis,
             "price": r["price"],
             "payout": None if payout is None else round(payout, 4), "payout_basis": payout_basis,
-            "last_increase": last_inc, "flags": "; ".join(flags), "as_of": today.isoformat(),
+            "last_increase": last_inc, "blocked": yield_block(yld, r["dgr10"]),
+            "flags": "; ".join(flags), "as_of": today.isoformat(),
         })
 
     # Rank: Crown-score, then tie-breakers (higher dgr10, lower payout, longer streak).
@@ -602,7 +622,7 @@ def main():
     fields = ["rank", "symbol", "company", "sector", "crown_score", "pts_streak", "pts_mcap", "pts_intl", "pts_dgr5",
               "pts_dgr10", "pts_yield", "pts_payout", "streak", "market_cap", "intl_pct", "intl_basis", "dgr5", "dgr10",
               "yield", "ttm_dps", "dps_basis",
-              "price", "payout", "payout_basis", "last_increase", "flags", "as_of"]
+              "price", "payout", "payout_basis", "last_increase", "blocked", "flags", "as_of"]
     with OUT.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()

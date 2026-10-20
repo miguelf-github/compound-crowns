@@ -70,6 +70,7 @@ FULL_RESCREEN           = every January run (or first run ever)
 Tie-breakers, in order: higher `dgr10`, then lower `payout`, then longer `streak`.
 
 ## STEP 3 — SELECT THE 30
+0. **Yield rule:** a company yielding under 1.5% is not eligible unless its 10-yr dividend growth (`dgr10`) is 10% or more. It still takes the −1 yield point.
 1. Group the scored universe by GICS sector and rank within each sector by Crown-score.
 2. **Pass 1:** take the #1 stock from every sector that has at least one eligible stock.
 3. **Pass 2:** fill the remaining slots up to `TARGET_POSITIONS` from all leftover stocks, ranked by Crown-score, skipping any sector that already has `MAX_PER_SECTOR` names.
