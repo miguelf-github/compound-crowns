@@ -1,6 +1,6 @@
-# Compound Crown
+# Compound Crowns
 
-**A dividend growth trading bot strategy.** Compound Crown holds about 30 large U.S. companies that have raised their dividend for 25+ years in a row, scores them on dividend quality, and runs a rules-based monthly process on an **Alpaca paper trading account**: buy the best-scoring names across sectors, reinvest dividends into the most underweight holdings, and sell only when a company cuts or freezes its dividend.
+**A dividend growth trading bot strategy.** Compound Crowns holds about 30 large U.S. companies that have raised their dividend for 25+ years in a row, scores them on dividend quality, and runs a rules-based monthly process on an **Alpaca paper trading account**: buy the best-scoring names across sectors, reinvest dividends into the most underweight holdings, and sell only when a company cuts or freezes its dividend.
 
 It aims for steadily rising income, not market-beating returns. Expect it to lag the S&P 500 in tech-led rallies and hold up better in drawdowns.
 
@@ -11,23 +11,24 @@ It aims for steadily rising income, not market-beating returns. Expect it to lag
 | Step | Script | What it does |
 |---|---|---|
 | 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Drops ADRs, Canadian primary listings, REITs, MLPs, OTC stocks and everything below the median market cap. |
-| 2. Score | `compute_qscores.py` | Scores each company 0–13 on streak length, size, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
+| 2. Score | `compute_cscores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
 | 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, places limit orders, tracks dividends, and writes a run report. |
 
 The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
-### Q-score
+### C-score
 
 | Factor | Points |
 |---|---|
 | Dividend streak | 25–34 yrs = 1 · 35–49 = 2 · 50+ = 3 |
 | Market cap (within universe) | top third = 2 · middle = 1 · bottom = 0 |
+| International sales (share of revenue outside the US) | ≥40% = 2 · 20–39% = 1 · 1–19% = 0 · US-only = −1 |
 | 5-yr dividend growth | ≥10% = 2 · 5–10% = 1 · 3–5% = 0 · <3% = −1 |
 | 10-yr dividend growth | ≥8% = 3 · 4–8% = 2 · 2–4% = 0 · <2% = −1 |
 | Yield | ≥3.5% = 2 · 1.5–3.5% = 1 · <1.5% = −1 |
 | Payout (dividends ÷ FCF) | <60% = 1 · 60–89% = 0 · ≥90% or negative FCF = −2 |
 
-International sales (up to +2 in the methodology) is switched off until a data source for revenue by region is available.
+**US companies that sell worldwide.** The universe is US-listed companies, but a business that sells only in the US is concentrated in a single market, so US-only revenue costs a point and broad international sales earn up to two. The share comes from the geographic revenue table tagged in each company's latest 10-K (or geographic business segments, such as Aflac Japan). A company with no geographic disclosure is treated as US-only and flagged.
 
 ### Monthly rules
 
@@ -56,7 +57,7 @@ Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpac
 
 ```bash
 uv run build_universe.py          # step 1: data/universe.csv (+ excluded list with reasons)
-uv run compute_qscores.py         # step 2: data/qscores.csv and a 30-stock selection preview
+uv run compute_cscores.py         # step 2: data/cscores.csv and a 30-stock selection preview
 uv run run_monthly.py             # dry run: report in data/reports/, places nothing
 uv run run_monthly.py --execute   # place the planned orders (market must be open)
 ```
@@ -73,4 +74,4 @@ Re-run steps 1–2 every January (the full re-screen); run step 3 on the first t
 
 ## Disclaimer
 
-Compound Crown is an independent project inspired by the publicly described rules of Nanalyze's Quantigence. It is not affiliated with or endorsed by Nanalyze, and its scoring weights are an approximation. Paper results overstate real results (idealized fills, simulated dividends). Nothing here is investment advice.
+Compound Crowns is an independent project inspired by the publicly described rules of Nanalyze's Quantigence. It is not affiliated with or endorsed by Nanalyze, and its scoring weights are an approximation. Paper results overstate real results (idealized fills, simulated dividends). Nothing here is investment advice.

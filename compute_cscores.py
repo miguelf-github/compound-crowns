@@ -1,8 +1,8 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests", "python-dotenv"]
+# dependencies = ["requests", "python-dotenv", "defusedxml"]
 # ///
-"""Compound Crown Step 2: Q-score the universe.
+"""Compound Crowns Step 2: C-score the universe.
 
 Reads data/universe.csv and scores each company per the methodology, using free data:
   - payout  = TTM common dividends paid / TTM free cash flow, from SEC EDGAR XBRL filings
@@ -11,31 +11,35 @@ Reads data/universe.csv and scores each company per the methodology, using free 
               ALPACA_API_KEY / ALPACA_SECRET_KEY are in .env (split-adjusted, specials excluded);
               otherwise from per-share dividends declared in SEC filings.
   - streak, dgr5, dgr10 come from the Dividend Champions spreadsheet (via universe.csv).
-International sales is skipped while INTL_SALES_FACTOR is False.
+  - intl    = share of revenue from outside the US, from the geographic revenue table tagged in the latest
+              10-K (or geographic business segments). No geographic disclosure is treated as US-only (-1).
 
-Writes data/qscores.csv and prints a preview of the Step 3 selection.
+Writes data/cscores.csv and prints a preview of the Step 3 selection.
 SEC responses are cached in data/cache/sec for CACHE_DAYS.
 
-Run:  uv run compute_qscores.py
+Run:  uv run compute_cscores.py
 """
 import csv
 import json
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import defusedxml.ElementTree as ET
 import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).parent
 UNIVERSE = ROOT / "data" / "universe.csv"
-OUT = ROOT / "data" / "qscores.csv"
+OUT = ROOT / "data" / "cscores.csv"
 CACHE = ROOT / "data" / "cache" / "sec"
 CACHE_DAYS = 7
 
-INTL_SALES_FACTOR = False
+# Prefer US companies that sell worldwide; US-only revenue concentrates the business in one market.
+INTL_SALES_FACTOR = True
 TARGET_POSITIONS = 30
 MAX_PER_SECTOR = 5
 FREEZE_MONTHS = 15
@@ -44,6 +48,11 @@ MAX_DPS_AGE_DAYS = 270  # older SEC per-share dividend data counts as missing
 PAYOUT_PENALTY_OVERRIDES = {
     "XOM": "known high payout ratio (user rule)",
     "CVX": "known high payout ratio (user rule)",
+}
+
+# Companies whose SEC filer ID changed (e.g. a holding-company reorganization): history lives under the old ID.
+PREDECESSOR_CIKS = {
+    "XOM": 34088,  # Exxon Mobil Corp, before the 2026 ExxonMobil Holdings reorganization
 }
 
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
@@ -239,7 +248,159 @@ def dividend_flags(history, today):
     return last_increase, flags
 
 
+# ---------- international sales (latest 10-K, SEC XBRL instance) ----------
+
+XBRLI = "{http://www.xbrl.org/2003/instance}"
+XBRLDI = "{http://xbrl.org/2006/xbrldi}"
+REVENUE_CONCEPTS = ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                    "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "SalesRevenueGoodsNet",
+                    # insurers report geography on premiums rather than revenue
+                    "PremiumsEarnedNet", "PremiumsWrittenGross", "PremiumsWrittenNet")
+NON_US_RE = re.compile(r"(non|outside|otherthan|excluding|ex)(us|unitedstates|usa)|international|foreign|nondomestic")
+FOREIGN_WORDS = ("Japan", "Europe", "EMEA", "Asia", "Pacific", "Latin", "Canada", "China", "International",
+                 "Foreign", "Africa", "MiddleEast", "UnitedKingdom", "Germany", "Mexico", "Brazil", "Australia",
+                 "Overseas")
+
+
+def geo_class(member):
+    """'US', 'NONUS' (an aggregate of everything outside the US), 'NA' (North America), 'FOREIGN', or None."""
+    ns, _, local = member.partition(":")
+    if ns == "country":
+        return "US" if local == "US" else "FOREIGN"
+    name = local.removesuffix("Member")
+    low = name.lower()
+    if NON_US_RE.search(low):
+        return "NONUS"
+    tokens = set(re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+", name))
+    if tokens & {"US", "USA", "Domestic"} or "UnitedStates" in name:
+        return "US"
+    if "NorthAmerica" in name or ("Americas" in name and "Latin" not in name):
+        return "NA"
+    if any(w in name for w in FOREIGN_WORDS):
+        return "FOREIGN"
+    return None
+
+
+def sec_fetch(session, url, tries=4):
+    """GET with backoff: SEC answers bursts with 403/429 'request rate threshold exceeded'."""
+    for attempt in range(tries):
+        resp = session.get(url, timeout=60)
+        if resp.status_code not in (403, 429, 503):
+            return resp
+        time.sleep(2 * (attempt + 1))
+    return resp
+
+
+def latest_10k_instance(session, cik):
+    """(report_date, XBRL instance bytes) for the latest 10-K, or (None, None)."""
+    sub = sec_get(session, f"https://data.sec.gov/submissions/CIK{cik:010d}.json", f"submissions_{cik}.json")
+    recent = (sub or {}).get("filings", {}).get("recent", {})
+    idx = next((i for i, f in enumerate(recent.get("form", [])) if f == "10-K"), None)
+    if idx is None:
+        return None, None
+    acc = recent["accessionNumber"][idx].replace("-", "")
+    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/"
+    resp = sec_fetch(session, base + recent["primaryDocument"][idx].rsplit(".", 1)[0] + "_htm.xml")
+    if resp.status_code != 200:  # older filings: find the instance in the filing index
+        time.sleep(1)
+        index = sec_fetch(session, base + "index.json").json()
+        names = [x["name"] for x in index["directory"]["item"] if x["name"].endswith(".xml")]
+        # the instance is <doc>_htm.xml (inline XBRL) or the .xml that isn't a linkbase (_cal/_def/_lab/_pre)
+        name = next((n for n in names if n.endswith("_htm.xml")), None) or next(
+            (n for n in names if not n.startswith(("FilingSummary", "R"))
+             and not n.endswith(("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml"))), None)
+        if not name:
+            return recent["reportDate"][idx], None
+        resp = sec_fetch(session, base + name)
+    time.sleep(0.15)
+    return recent["reportDate"][idx], resp.content if resp.status_code == 200 else None
+
+
+def intl_from_instance(xml_bytes):
+    """Share of revenue from outside the US for the latest fiscal year, with a note on how it was derived."""
+    tree = ET.fromstring(xml_bytes)
+    contexts = {}
+    for cx in tree.iter(XBRLI + "context"):
+        period = cx.find(XBRLI + "period")
+        start, end = period.findtext(XBRLI + "startDate"), period.findtext(XBRLI + "endDate")
+        dims = [(m.get("dimension", ""), (m.text or "").strip()) for m in cx.iter(XBRLDI + "explicitMember")]
+        if start and end and 350 <= (date.fromisoformat(end) - date.fromisoformat(start)).days <= 380:
+            contexts[cx.get("id")] = (end, dims)
+    totals, splits = {}, {}  # (concept, end) -> value ; (concept, end, axis kind) -> {member key: value}
+    for el in tree:
+        concept = el.tag.split("}")[-1]
+        if concept not in REVENUE_CONCEPTS or el.get("contextRef") not in contexts or not (el.text or "").strip():
+            continue
+        end, dims = contexts[el.get("contextRef")]
+        # "Operating segments" on the consolidation axis is just a label; eliminations and corporate rows are skipped.
+        dims = [d for d in dims if not (d[0].endswith("ConsolidationItemsAxis") and d[1].endswith("OperatingSegmentsMember"))]
+        if any(d[0].endswith("ConsolidationItemsAxis") for d in dims):
+            continue
+        value = float(el.text)
+        geo = [m for a, m in dims if a.endswith("StatementGeographicalAxis")]
+        seg = [m for a, m in dims if a.endswith("StatementBusinessSegmentsAxis")]
+        if not dims:
+            totals[(concept, end)] = value
+        elif len(dims) == 1:
+            splits.setdefault((concept, end, "geo" if geo else "segment"), {})[dims[0][1]] = value
+        elif len(dims) == 2 and geo and seg:  # geography x business segment: summed per geography below
+            splits.setdefault((concept, end, "geo_x_segment"), {})[(geo[0], seg[0])] = value
+    for key in [k for k in splits if k[2] == "geo_x_segment"]:
+        by_geo = {}
+        for (geo_member, _), v in splits[key].items():
+            by_geo[geo_member] = by_geo.get(geo_member, 0) + v
+        splits[key] = by_geo
+
+    def compute(members, total):
+        by = {}
+        for m, v in members.items():
+            c = geo_class(m)
+            if c:
+                by[c] = by.get(c, 0) + v
+        if "US" in by:
+            return 1 - by["US"] / total, "US revenue reported"
+        if "NONUS" in by:
+            return by["NONUS"] / total, "non-US revenue reported"
+        if "NA" in by:
+            return 1 - by["NA"] / total, "North America used as proxy for US"
+        if "FOREIGN" in by:
+            return by["FOREIGN"] / total, "only foreign regions reported (lower bound)"
+        return None, None
+
+    for axis in ("geo", "geo_x_segment", "segment"):
+        keys = sorted((k for k in splits if k[2] == axis), key=lambda k: (k[1], k[0] == "Revenues"), reverse=True)
+        for concept, end, _ in keys:
+            total = totals.get((concept, end)) or max((v for (c, e), v in totals.items() if e == end), default=None)
+            if not total:
+                continue
+            share, how = compute(splits[(concept, end, axis)], total)
+            if share is not None:
+                note = {"segment": " (business segments)", "geo_x_segment": " (summed across business segments)"}
+                return max(0.0, min(1.0, share)), f"{how}, FY ending {end}{note.get(axis, '')}"
+    return 0.0, "no geographic revenue disclosure (treated as US-only)"
+
+
+def intl_sales(session, cik):
+    """Cached wrapper: (intl share or None, basis)."""
+    path = CACHE / f"intl_{cik}.json"
+    if path.exists() and datetime.fromtimestamp(path.stat().st_mtime) > datetime.now() - timedelta(days=CACHE_DAYS):
+        return tuple(json.loads(path.read_text(encoding="utf-8")))
+    report_date, xml_bytes = latest_10k_instance(session, cik)
+    if not xml_bytes:
+        return None, "no 10-K XBRL instance found"  # not cached, so the next run retries
+    result = intl_from_instance(xml_bytes)
+    path.write_text(json.dumps(result), encoding="utf-8")
+    return result
+
+
 # ---------- scoring (methodology Step 2) ----------
+
+def pts_intl(s):
+    """>=40% = 2, 20-39% = 1, 1-19% = 0, US-only (<1%) = -1, unknown = 0."""
+    if s is None:
+        return 0
+    return 2 if s >= .40 else 1 if s >= .20 else 0 if s >= .01 else -1
+
 
 def pts_streak(y):   return 3 if y >= 50 else 2 if y >= 35 else 1
 def pts_dgr5(g):     return 2 if g >= .10 else 1 if g >= .05 else 0 if g >= .03 else -1
@@ -252,7 +413,7 @@ def main():
     load_dotenv(ROOT / ".env")
     today = date.today()
     sec = requests.Session()
-    sec.headers["User-Agent"] = os.getenv("SEC_USER_AGENT", "").strip() or "Compound Crown research script (personal use)"
+    sec.headers["User-Agent"] = os.getenv("SEC_USER_AGENT", "").strip() or "Compound Crowns research script (personal use)"
 
     with UNIVERSE.open(encoding="utf-8") as f:
         universe = list(csv.DictReader(f))
@@ -286,6 +447,15 @@ def main():
         flags = []
         cik = cik_by_ticker.get(sym.upper()) or cik_by_ticker.get(sym.upper().replace("-", "."))
         facts = sec_get(sec, SEC_FACTS.format(cik=cik), f"CIK{cik}.json") if cik else None
+        old_cik = PREDECESSOR_CIKS.get(sym)
+        if old_cik:  # merge the predecessor's history in; the current filer's facts win for the same period
+            old = sec_get(sec, SEC_FACTS.format(cik=old_cik), f"CIK{old_cik}.json") or {}
+            merged = (facts or {"facts": {}}).setdefault("facts", {}).setdefault("us-gaap", {})
+            for concept, node in old.get("facts", {}).get("us-gaap", {}).items():
+                for unit, items in node.get("units", {}).items():
+                    current = merged.setdefault(concept, {"units": {}})["units"].setdefault(unit, [])
+                    current[:0] = items  # older filings first, so the current filer's values take precedence
+            facts = facts or {"facts": {"us-gaap": merged}}
         if facts is None:
             flags.append("no SEC XBRL data")
             payout, payout_basis = None, "no SEC data"
@@ -294,6 +464,14 @@ def main():
             flags += payout_flags
             if payout is None:
                 flags.append(f"payout missing ({payout_basis})")
+
+        intl, intl_basis = intl_sales(sec, cik) if (INTL_SALES_FACTOR and cik) else (None, "factor off")
+        if INTL_SALES_FACTOR and intl is None and old_cik:
+            intl, intl_basis = intl_sales(sec, old_cik)
+            intl_basis += " (predecessor filer)"
+        if INTL_SALES_FACTOR and (intl is None or "treated as US-only" in intl_basis or "proxy" in intl_basis
+                                  or "lower bound" in intl_basis):
+            flags.append(f"intl sales: {intl_basis}")
 
         if alpaca_hist is not None:
             hist = alpaca_hist.get(sym, [])
@@ -316,6 +494,7 @@ def main():
         pts = {
             "pts_streak": pts_streak(r["streak"]),
             "pts_mcap": r["pts_mcap"],
+            "pts_intl": pts_intl(intl) if INTL_SALES_FACTOR else 0,
             "pts_dgr5": pts_dgr5(r["dgr5"]),
             "pts_dgr10": pts_dgr10(r["dgr10"]),
             "pts_yield": pts_yield(yld) if yld is not None else 0,
@@ -326,8 +505,9 @@ def main():
             flags.append(f"payout docked to -2: {PAYOUT_PENALTY_OVERRIDES[sym]}")
         rows.append({
             "symbol": sym, "company": r["company"], "sector": r["sector"],
-            "qscore": sum(pts.values()), **pts,
+            "cscore": sum(pts.values()), **pts,
             "streak": r["streak"], "market_cap": r["market_cap"],
+            "intl_pct": None if intl is None else round(intl, 4), "intl_basis": intl_basis,
             "dgr5": round(r["dgr5"], 4), "dgr10": round(r["dgr10"], 4),
             "yield": None if yld is None else round(yld, 4),
             "ttm_dps": None if ttm_dps is None else round(ttm_dps, 4), "dps_basis": dps_basis,
@@ -336,21 +516,22 @@ def main():
             "last_increase": last_inc, "flags": "; ".join(flags), "as_of": today.isoformat(),
         })
 
-    # Rank: Q-score, then tie-breakers (higher dgr10, lower payout, longer streak).
-    rows.sort(key=lambda x: (-x["qscore"], -x["dgr10"],
+    # Rank: C-score, then tie-breakers (higher dgr10, lower payout, longer streak).
+    rows.sort(key=lambda x: (-x["cscore"], -x["dgr10"],
                              x["payout"] if x["payout"] is not None and x["payout"] >= 0 else 9, -x["streak"]))
     for rank, x in enumerate(rows, 1):
         x["rank"] = rank
 
-    fields = ["rank", "symbol", "company", "sector", "qscore", "pts_streak", "pts_mcap", "pts_dgr5", "pts_dgr10",
-              "pts_yield", "pts_payout", "streak", "market_cap", "dgr5", "dgr10", "yield", "ttm_dps", "dps_basis",
+    fields = ["rank", "symbol", "company", "sector", "cscore", "pts_streak", "pts_mcap", "pts_intl", "pts_dgr5",
+              "pts_dgr10", "pts_yield", "pts_payout", "streak", "market_cap", "intl_pct", "intl_basis", "dgr5", "dgr10",
+              "yield", "ttm_dps", "dps_basis",
               "price", "payout", "payout_basis", "last_increase", "flags", "as_of"]
     with OUT.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(rows)
     print(f"\nWrote {len(rows)} scored companies -> {OUT.relative_to(ROOT)}"
-          f"  (INTL_SALES_FACTOR={'ON' if INTL_SALES_FACTOR else 'OFF'}, max score 13)")
+          f"  (INTL_SALES_FACTOR={'ON' if INTL_SALES_FACTOR else 'OFF'}, max score {15 if INTL_SALES_FACTOR else 13})")
 
     # Step 3 preview: best per sector, then fill by rank respecting the sector cap.
     selected, per_sector = [], {}
@@ -368,11 +549,11 @@ def main():
     selected.sort(key=lambda x: x["rank"])
 
     print(f"\nSelection preview ({len(selected)} names):")
-    print(f"{'rank':>4} {'sym':6} {'Q':>3}  {'sector':24} {'yield':>6} {'payout':>7}  flags")
+    print(f"{'rank':>4} {'sym':6} {'C':>3}  {'sector':24} {'yield':>6} {'payout':>7}  flags")
     for x in selected:
         y = f"{x['yield']:.1%}" if x["yield"] is not None else "-"
         p = f"{x['payout']:.0%}" if x["payout"] is not None else "-"
-        print(f"{x['rank']:>4} {x['symbol']:6} {x['qscore']:>3}  {x['sector'][:24]:24} {y:>6} {p:>7}  {x['flags']}")
+        print(f"{x['rank']:>4} {x['symbol']:6} {x['cscore']:>3}  {x['sector'][:24]:24} {y:>6} {p:>7}  {x['flags']}")
     print("\nPer sector:", dict(sorted(per_sector.items(), key=lambda kv: -kv[1])))
 
 

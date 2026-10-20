@@ -1,8 +1,8 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openpyxl", "requests", "python-dotenv"]
+# dependencies = ["openpyxl", "requests", "python-dotenv", "defusedxml"]
 # ///
-"""Compound Crown Step 1: build the screening universe.
+"""Compound Crowns Step 1: build the screening universe.
 
 Reads the U.S. Dividend Champions spreadsheet, pulls each company's profile from
 Financial Modeling Prep, applies the methodology's exclusions and size filter,
@@ -77,7 +77,7 @@ def load_champions():
 
 def load_additions(sec_user_agent):
     """MANUAL_ADDITIONS rows with 5- and 10-year dividend growth from SEC filings."""
-    from compute_qscores import SEC_FACTS, SEC_TICKERS, dps_growth, sec_get
+    from compute_cscores import SEC_FACTS, SEC_TICKERS, dps_growth, sec_get
 
     if not MANUAL_ADDITIONS:
         return []

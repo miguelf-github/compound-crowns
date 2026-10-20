@@ -1,14 +1,14 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests", "python-dotenv", "tzdata"]
+# dependencies = ["requests", "python-dotenv", "tzdata", "defusedxml"]
 # ///
-"""Compound Crown monthly run: Steps 3-8 of the methodology on the Alpaca PAPER account.
+"""Compound Crowns monthly run: Steps 3-8 of the methodology on the Alpaca PAPER account.
 
   uv run run_monthly.py            # dry run: builds the plan and report, places nothing
   uv run run_monthly.py --execute  # places the planned orders (market must be open)
 
-Inputs:  data/qscores.csv (from compute_qscores.py) and data/qscore_state.json (created on the first --execute).
-Outputs: data/reports/run_<date>.md, and on --execute an updated data/qscore_state.json.
+Inputs:  data/cscores.csv (from compute_cscores.py) and data/cscore_state.json (created on the first --execute).
+Outputs: data/reports/run_<date>.md, and on --execute an updated data/cscore_state.json.
 
 Dividend ledger: Alpaca paper accounts never pay dividends, so each run rebuilds a ledger from Alpaca's
 dividend history and the account's own fills (shares held before each ex-date x dividend per share).
@@ -29,11 +29,11 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 
-from compute_qscores import dividend_flags
+from compute_cscores import dividend_flags
 
 ROOT = Path(__file__).parent
-QSCORES = ROOT / "data" / "qscores.csv"
-STATE = ROOT / "data" / "qscore_state.json"
+CSCORES = ROOT / "data" / "cscores.csv"
+STATE = ROOT / "data" / "cscore_state.json"
 REPORTS = ROOT / "data" / "reports"
 
 TRADING = "https://paper-api.alpaca.markets/v2"
@@ -54,9 +54,9 @@ BENCHMARKS = ("SPY", "NOBL")
 # ---- additions agreed after the methodology review ----
 DIVIDEND_RESERVE = 5_000.0      # paper cash held back and released as dividends are credited
 MAX_SPEND_PCT_PER_RUN = 0.40    # emergency stop: refuse --execute if buys exceed this share of equity
-QSCORES_MAX_AGE_DAYS = 45       # warn when the screen is older than this
+CSCORES_MAX_AGE_DAYS = 45       # warn when the screen is older than this
 LIMIT_OFFSET = 0.001            # buy at ask + 0.10%, sell at bid - 0.10%
-ORDER_PREFIX = "qscore"
+ORDER_PREFIX = "cscore"
 
 
 # ---------- Alpaca ----------
@@ -221,10 +221,10 @@ def overlay_multiplier(y):
 # ---------- selection (Step 3 and Step 6 replacement) ----------
 
 def load_scores():
-    with QSCORES.open(encoding="utf-8") as f:
+    with CSCORES.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     for r in rows:
-        r["rank"], r["qscore"] = int(r["rank"]), int(r["qscore"])
+        r["rank"], r["cscore"] = int(r["rank"]), int(r["cscore"])
     return sorted(rows, key=lambda r: r["rank"])
 
 
@@ -292,10 +292,10 @@ def main():
     scores = load_scores()
     score_by = {r["symbol"]: r for r in scores}
     qs_age = (today - date.fromisoformat(scores[0]["as_of"])).days
-    if qs_age > QSCORES_MAX_AGE_DAYS:
-        data_flags.append(f"qscores.csv is {qs_age} days old; re-run build_universe.py and compute_qscores.py")
+    if qs_age > CSCORES_MAX_AGE_DAYS:
+        data_flags.append(f"cscores.csv is {qs_age} days old; re-run build_universe.py and compute_cscores.py")
     if today.month == 1 and state and not state.get("last_full_screen", "").startswith(str(today.year)):
-        notes.append("January: full re-screen due (build_universe.py, compute_qscores.py) before this run")
+        notes.append("January: full re-screen due (build_universe.py, compute_cscores.py) before this run")
 
     positions = api.positions()
     orders = api.orders()
@@ -307,7 +307,7 @@ def main():
     # --- selection ---
     if first_run:
         sel_rows = select_initial(scores)
-        selected = [{"symbol": r["symbol"], "sector": r["sector"], "qscore": r["qscore"],
+        selected = [{"symbol": r["symbol"], "sector": r["sector"], "cscore": r["cscore"],
                      "selected_date": today.isoformat(), "first_buy_date": None} for r in sel_rows]
         sold_log = []
     else:
@@ -370,7 +370,7 @@ def main():
             selected.remove(gone)
             rep = replacement(scores, gone["sector"], {x["symbol"] for x in selected}, {x["symbol"] for x in sold_log})
             if rep:
-                selected.append({"symbol": rep["symbol"], "sector": rep["sector"], "qscore": rep["qscore"],
+                selected.append({"symbol": rep["symbol"], "sector": rep["sector"], "cscore": rep["cscore"],
                                  "selected_date": today.isoformat(), "first_buy_date": None})
                 notes.append(f"{rep['symbol']} replaces {gone['symbol']} ({rep['sector']})")
 
@@ -396,7 +396,7 @@ def main():
         regular = [(e["ex_date"], e["rate_today_shares"]) for e in events.get(sym, [])
                    if not e["special"] and e["ex_date"] <= today]
         last_inc, dflags = dividend_flags(regular, today)
-        holdings.append({"symbol": sym, "sector": s["sector"], "qscore": s["qscore"], "y": y, "shares": shares,
+        holdings.append({"symbol": sym, "sector": s["sector"], "cscore": s["cscore"], "y": y, "shares": shares,
                          "mv": mv, "weight": mv / syn_equity if syn_equity else 0, "target": target, "gap": gap,
                          "streak": "; ".join(dflags) or f"ok (last raise {last_inc})"})
         if gap <= 0:
@@ -413,10 +413,10 @@ def main():
         if any(o["symbol"] == alpaca_sym(sym) and o["side"] == "buy" for o in open_orders):
             skipped.append((sym, "open buy order already working"))
             continue
-        candidates.append({"symbol": sym, "qscore": s["qscore"], "gap_pct": gap / target,
+        candidates.append({"symbol": sym, "cscore": s["cscore"], "gap_pct": gap / target,
                            "value": gap if args.deploy_all else min(gap, tranche * mult), "reason": why, "quote": q})
 
-    candidates.sort(key=lambda c: (-c["gap_pct"], -c["qscore"]))
+    candidates.sort(key=lambda c: (-c["gap_pct"], -c["cscore"]))
     planned, budget = [], spendable
     for c in candidates:
         value = min(c["value"], budget)
@@ -535,15 +535,15 @@ def main():
         f"DIVIDEND LEDGER: reserve ${reserve:,.2f} | credited ${credited:,.2f} | pending ${pending:,.2f} | "
         f"reserve left ${reserve_left:,.2f} | live-equivalent equity ${syn_equity:,.2f} | spendable ${spendable:,.2f}",
         f"MARKET STATUS: {'open' if market_open else 'closed'} (next open {clock.get('next_open', '')[:16]})",
-        f"SCREEN USED: {scores[0]['as_of']} qscores.csv ({len(scores)} scored) | "
+        f"SCREEN USED: {scores[0]['as_of']} cscores.csv ({len(scores)} scored) | "
         f"{'first run: selection built now' if first_run else 'selection from state'} | re-screened this run? N",
         "",
         "HOLDINGS TABLE:",
-        "| symbol | sector | Q | Y ratio | shares | mkt value | weight | target | gap | streak status |",
+        "| symbol | sector | C | Y ratio | shares | mkt value | weight | target | gap | streak status |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for h in sorted(holdings, key=lambda h: -h["gap"]):
-        lines.append(f"| {h['symbol']} | {h['sector']} | {h['qscore']} | {ratio(h['y'])} | "
+        lines.append(f"| {h['symbol']} | {h['sector']} | {h['cscore']} | {ratio(h['y'])} | "
                      f"{h['shares']:g} | ${h['mv']:,.0f} | {h['weight']:.1%} | ${h['target']:,.0f} | ${h['gap']:,.0f} | {h['streak']} |")
     lines += ["", f"ORDERS {'PLACED' if args.execute else 'PLANNED'} ({len(planned)}, buys ${buy_total:,.2f}):",
               "| symbol | side | qty | type | limit | value | reason | result |", "|---|---|---|---|---|---|---|---|"]
@@ -580,7 +580,7 @@ def main():
         new_state = {
             "last_run": today.isoformat(),
             "last_full_screen": (state or {}).get("last_full_screen") or scores[0]["as_of"],
-            "screen_source": "data/qscores.csv",
+            "screen_source": "data/cscores.csv",
             "selected": [{**s, "target_weight": round(target_weight, 5),
                           "runs_unstarted": 0 if s["first_buy_date"] else months_between(
                               date.fromisoformat(s["selected_date"]), today)} for s in selected],

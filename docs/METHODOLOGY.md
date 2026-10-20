@@ -1,8 +1,8 @@
-# Compound Crown — Dividend Growth Strategy Methodology (Alpaca PAPER)
+# Compound Crowns — Dividend Growth Strategy Methodology (Alpaca PAPER)
 
 > Paste everything below the line into your trading agent (an LLM with the Alpaca MCP connected).
-> Edit the CONFIG block first. Compound Crown is an independent strategy inspired by the publicly described rules of Nanalyze's Quantigence; it is not affiliated with Nanalyze, and
-> the scoring weights are my own approximation, since the official Q-score formula is proprietary.
+> Edit the CONFIG block first. Compound Crowns is an independent strategy inspired by the publicly described rules of Nanalyze's Quantigence; it is not affiliated with Nanalyze, and
+> the scoring weights are my own approximation, since the official C-score formula is proprietary.
 
 ---
 
@@ -55,12 +55,12 @@ FULL_RESCREEN           = every January run (or first run ever)
 | `yield_5y_avg` | average of month-end yields over the last 60 months |
 | `sector` | GICS sector (11 sectors) |
 
-## STEP 2 — Q-SCORE (0 to 15 points, higher is better)
+## STEP 2 — C-SCORE (0 to 15 points, higher is better)
 | Factor | Points |
 |---|---|
 | **Streak** | 25–34 yrs = 1 · 35–49 = 2 · 50+ = 3 |
 | **Market cap** (within the filtered universe) | top third = 2 · middle third = 1 · bottom third = 0 |
-| **International sales** (skip if `INTL_SALES_FACTOR=OFF`) | ≥40% = 2 · 20–39% = 1 · 1–19% = 0 · US-only = −1 · unknown = 0 + flag |
+| **International sales** (skip if `INTL_SALES_FACTOR=OFF`) | ≥40% = 2 · 20–39% = 1 · 1–19% = 0 · US-only = −1 · no geographic disclosure = treated as US-only (−1) + flag · unreadable = 0 + flag |
 | **5-yr dividend growth** | ≥10% = 2 · 5–9.99% = 1 · 3–4.99% = 0 · <3% = −1 |
 | **10-yr dividend growth** | ≥8% = 3 · 4–7.99% = 2 · 2–3.99% = 0 · <2% = −1 |
 | **Yield** | ≥3.5% = 2 · 1.5–3.49% = 1 · <1.5% = −1 |
@@ -69,9 +69,9 @@ FULL_RESCREEN           = every January run (or first run ever)
 Tie-breakers, in order: higher `dgr10`, then lower `payout`, then longer `streak`.
 
 ## STEP 3 — SELECT THE 30
-1. Group the scored universe by GICS sector and rank within each sector by Q-score.
+1. Group the scored universe by GICS sector and rank within each sector by C-score.
 2. **Pass 1:** take the #1 stock from every sector that has at least one eligible stock.
-3. **Pass 2:** fill the remaining slots up to `TARGET_POSITIONS` from all leftover stocks, ranked by Q-score, skipping any sector that already has `MAX_PER_SECTOR` names.
+3. **Pass 2:** fill the remaining slots up to `TARGET_POSITIONS` from all leftover stocks, ranked by C-score, skipping any sector that already has `MAX_PER_SECTOR` names.
 4. If fewer than 30 stocks qualify, hold fewer. Never relax the filters to reach 30.
 5. **Target weight** = (1 − `CASH_BUFFER`) / number of selected stocks, equal weight (≈3.3% each at 30).
 6. On January re-screens, **do not sell current holdings because they fell out of the top 30.** Only open slots (from Step 6 sells) get filled from the new ranking. Low turnover is the point.
@@ -94,7 +94,7 @@ If `VALUE_OVERLAY=OFF`, buy exactly 1 tranche per run.
 1. `tranche` = target weight × current equity / `DCA_MONTHS`.
 2. For each selected stock, compute `gap` = target value − current market value. If `gap ≤ 0`, buy nothing.
 3. Order value = min(gap, tranche × overlay multiplier from Step 4).
-4. Spend cash in this priority order: (a) stocks with the largest % gap vs target, (b) higher Q-score. Stop when cash reaches `CASH_BUFFER`.
+4. Spend cash in this priority order: (a) stocks with the largest % gap vs target, (b) higher C-score. Stop when cash reaches `CASH_BUFFER`.
 5. **Dividends received are not auto-reinvested by symbol.** They go into the cash pool and get deployed by this same priority logic, which naturally steers income to the most underweight holdings.
 6. **Order mechanics:**
    - Prefer **whole-share limit orders**, `time_in_force=day`, limit = latest ask + 0.10%.
@@ -109,7 +109,7 @@ Check every holding every run:
 3. **Corporate event:** acquired, delisted, or converted into a non-eligible structure → sell 100%, or let a cash acquisition settle.
 4. **Hard-cap trim** (see Step 5.7).
 
-Do **not** sell for price drops, Q-score drops, bad news, or "valuation." Price drops mean the overlay buys more.
+Do **not** sell for price drops, C-score drops, bad news, or "valuation." Price drops mean the overlay buys more.
 
 **Replacement:** a sold slot is filled by the highest-ranked unheld stock in the **same sector** from the most recent screen. If none exists, use the highest-ranked unheld stock overall, respecting `MAX_PER_SECTOR`. The new name starts at 0 and builds via the normal DCA engine.
 
@@ -125,7 +125,7 @@ MARKET STATUS: open/closed
 SCREEN USED: source + date (re-screened this run? Y/N)
 
 HOLDINGS TABLE:
-symbol | sector | Q-score | Y ratio | shares | mkt value | weight | target | gap | streak status
+symbol | sector | C-score | Y ratio | shares | mkt value | weight | target | gap | streak status
 
 ORDERS PLACED: symbol | side | qty | type | limit | reason (DCA tranche / overlay 2x / time stop / cut-sell / trim)
 ORDERS SKIPPED: symbol | reason (expensive Y<0.90 / insufficient cash / data missing / not fractionable)
@@ -138,13 +138,13 @@ DEPLOYMENT: % invested vs % cash
 ```
 
 ## STEP 8 — STATE
-At the end of each run, output a JSON state block. If you have file storage, save it as `qscore_state.json` and load it at the start of the next run. If not, reconstruct state from Alpaca positions and order history.
+At the end of each run, output a JSON state block. If you have file storage, save it as `cscore_state.json` and load it at the start of the next run. If not, reconstruct state from Alpaca positions and order history.
 ```json
 {
   "last_run": "YYYY-MM-DD",
   "last_full_screen": "YYYY-MM-DD",
   "screen_source": "",
-  "selected": [{"symbol": "", "sector": "", "qscore": 0, "target_weight": 0.033, "first_buy_date": null, "runs_unstarted": 0}],
+  "selected": [{"symbol": "", "sector": "", "cscore": 0, "target_weight": 0.033, "first_buy_date": null, "runs_unstarted": 0}],
   "bench_start": {"date": "", "SPY": 0, "NOBL": 0, "equity": 0},
   "sold_log": [{"symbol": "", "date": "", "reason": ""}]
 }
