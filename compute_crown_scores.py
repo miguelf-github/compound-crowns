@@ -59,7 +59,7 @@ SECTORS_TO_HOLD = [
 ]
 FREEZE_MONTHS = 15
 MAX_DPS_AGE_DAYS = 270  # older SEC per-share dividend data counts as missing
-# Yield rule (Nanalyze: very low yields take too long to compound into meaningful income). A company yielding
+# Yield rule (very low yields take too long to compound into meaningful income). A company yielding
 # under YIELD_FLOOR can only be selected if its 10-yr dividend growth is at least LOW_YIELD_MIN_DGR10.
 # It still takes the -1 yield point in the Crown-score either way.
 YIELD_FLOOR = 0.015
