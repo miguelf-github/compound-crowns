@@ -1,0 +1,16 @@
+# secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# local tooling
+.claude/
+
+# data: third-party downloads, API caches, account state and run reports stay local
+data/raw/
+data/cache/
+data/reports/
+data/qscore_state.json
+data/*.csv
