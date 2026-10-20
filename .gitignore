@@ -12,5 +12,5 @@ __pycache__/
 data/raw/
 data/cache/
 data/reports/
-data/cscore_state.json
+data/crown_score_state.json
 data/*.csv

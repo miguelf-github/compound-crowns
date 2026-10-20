@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["requests", "python-dotenv", "defusedxml"]
 # ///
-"""Compound Crowns Step 2: C-score the universe.
+"""Compound Crowns Step 2: Crown-score the universe.
 
 Reads data/universe.csv and scores each company per the methodology, using free data:
   - payout  = TTM common dividends paid / TTM free cash flow, from SEC EDGAR XBRL filings
@@ -14,10 +14,10 @@ Reads data/universe.csv and scores each company per the methodology, using free 
   - intl    = share of revenue from outside the US, from the geographic revenue table tagged in the latest
               10-K (or geographic business segments). No geographic disclosure is treated as US-only (-1).
 
-Writes data/cscores.csv and prints a preview of the Step 3 selection.
+Writes data/crown_scores.csv and prints a preview of the Step 3 selection.
 SEC responses are cached in data/cache/sec for CACHE_DAYS.
 
-Run:  uv run compute_cscores.py
+Run:  uv run compute_crown_scores.py
 """
 import csv
 import json
@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).parent
 UNIVERSE = ROOT / "data" / "universe.csv"
-OUT = ROOT / "data" / "cscores.csv"
+OUT = ROOT / "data" / "crown_scores.csv"
 CACHE = ROOT / "data" / "cache" / "sec"
 CACHE_DAYS = 7
 
@@ -582,7 +582,7 @@ def main():
             flags.append(f"payout docked to -2: {PAYOUT_PENALTY_OVERRIDES[sym]}")
         rows.append({
             "symbol": sym, "company": r["company"], "sector": r["sector"],
-            "cscore": sum(pts.values()), **pts,
+            "crown_score": sum(pts.values()), **pts,
             "streak": r["streak"], "market_cap": r["market_cap"],
             "intl_pct": None if intl is None else round(intl, 4), "intl_basis": intl_basis,
             "dgr5": round(r["dgr5"], 4), "dgr10": round(r["dgr10"], 4),
@@ -593,13 +593,13 @@ def main():
             "last_increase": last_inc, "flags": "; ".join(flags), "as_of": today.isoformat(),
         })
 
-    # Rank: C-score, then tie-breakers (higher dgr10, lower payout, longer streak).
-    rows.sort(key=lambda x: (-x["cscore"], -x["dgr10"],
+    # Rank: Crown-score, then tie-breakers (higher dgr10, lower payout, longer streak).
+    rows.sort(key=lambda x: (-x["crown_score"], -x["dgr10"],
                              x["payout"] if x["payout"] is not None and x["payout"] >= 0 else 9, -x["streak"]))
     for rank, x in enumerate(rows, 1):
         x["rank"] = rank
 
-    fields = ["rank", "symbol", "company", "sector", "cscore", "pts_streak", "pts_mcap", "pts_intl", "pts_dgr5",
+    fields = ["rank", "symbol", "company", "sector", "crown_score", "pts_streak", "pts_mcap", "pts_intl", "pts_dgr5",
               "pts_dgr10", "pts_yield", "pts_payout", "streak", "market_cap", "intl_pct", "intl_basis", "dgr5", "dgr10",
               "yield", "ttm_dps", "dps_basis",
               "price", "payout", "payout_basis", "last_increase", "flags", "as_of"]
@@ -616,11 +616,11 @@ def main():
         per_sector[x["sector"]] = per_sector.get(x["sector"], 0) + 1
 
     print(f"\nSelection preview ({len(selected)} names):")
-    print(f"{'rank':>4} {'sym':6} {'C':>3}  {'sector':24} {'yield':>6} {'payout':>7}  flags")
+    print(f"{'rank':>4} {'sym':6} {'Crown':>5}  {'sector':24} {'yield':>6} {'payout':>7}  flags")
     for x in selected:
         y = f"{x['yield']:.1%}" if x["yield"] is not None else "-"
         p = f"{x['payout']:.0%}" if x["payout"] is not None else "-"
-        print(f"{x['rank']:>4} {x['symbol']:6} {x['cscore']:>3}  {x['sector'][:24]:24} {y:>6} {p:>7}  {x['flags']}")
+        print(f"{x['rank']:>4} {x['symbol']:6} {x['crown_score']:>5}  {x['sector'][:24]:24} {y:>6} {p:>7}  {x['flags']}")
     print("\nPer sector:", dict(sorted(per_sector.items(), key=lambda kv: -kv[1])))
 
 

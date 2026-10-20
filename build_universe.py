@@ -76,7 +76,7 @@ def load_champions():
 
 def load_additions(sec_user_agent):
     """MANUAL_ADDITIONS rows with 5- and 10-year dividend growth from SEC filings."""
-    from compute_cscores import SEC_FACTS, SEC_TICKERS, dps_growth, sec_get
+    from compute_crown_scores import SEC_FACTS, SEC_TICKERS, dps_growth, sec_get
 
     if not MANUAL_ADDITIONS:
         return []

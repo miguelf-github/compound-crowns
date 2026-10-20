@@ -11,12 +11,12 @@ It aims for steadily rising income, not market-beating returns. Expect it to lag
 | Step | Script | What it does |
 |---|---|---|
 | 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Any company trading on a US exchange is eligible, wherever it's based. Drops REITs, MLPs, OTC stocks and everything below the median market cap. |
-| 2. Score | `compute_cscores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
+| 2. Score | `compute_crown_scores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
 | 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, places limit orders, tracks dividends, and writes a run report. |
 
 The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
-### C-score
+### Crown-score
 
 | Factor | Points |
 |---|---|
@@ -42,7 +42,7 @@ Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpac
 
 ## Sectors
 
-The strategy aims to hold every GICS sector (`SECTORS_TO_HOLD` in `compute_cscores.py`). Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by score, at most 5 per sector.
+The strategy aims to hold every GICS sector (`SECTORS_TO_HOLD` in `compute_crown_scores.py`). Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by score, at most 5 per sector.
 
 | Sector | In the current 30 | Note |
 |---|---|---|
@@ -77,7 +77,7 @@ Sectors with no eligible Champion stay empty rather than relaxing the rules.
 
 ```bash
 uv run build_universe.py          # step 1: data/universe.csv (+ excluded list with reasons)
-uv run compute_cscores.py         # step 2: data/cscores.csv and a 30-stock selection preview
+uv run compute_crown_scores.py         # step 2: data/crown_scores.csv and a 30-stock selection preview
 uv run run_monthly.py             # dry run: report in data/reports/, places nothing
 uv run run_monthly.py --execute   # place the planned orders (market must be open)
 ```
