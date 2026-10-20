@@ -1,8 +1,7 @@
 # Compound Crowns — Dividend Growth Strategy Methodology (Alpaca PAPER)
 
 > Paste everything below the line into your trading agent (an LLM with the Alpaca MCP connected).
-> Edit the CONFIG block first. Compound Crowns is an independent strategy inspired by the publicly described rules of Nanalyze's Quantigence; it is not affiliated with Nanalyze, and
-> the scoring weights are my own approximation, since the official Crown-score formula is proprietary.
+> Edit the CONFIG block first.
 
 ---
 
