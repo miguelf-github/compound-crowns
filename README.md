@@ -10,7 +10,7 @@ It aims for steadily rising income, not market-beating returns. Expect it to lag
 
 | Step | Script | What it does |
 |---|---|---|
-| 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Drops ADRs, Canadian primary listings, REITs, MLPs, OTC stocks and everything below the median market cap. |
+| 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Any company trading on a US exchange is eligible, wherever it's based. Drops REITs, MLPs, OTC stocks and everything below the median market cap. |
 | 2. Score | `compute_cscores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
 | 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, places limit orders, tracks dividends, and writes a run report. |
 
@@ -39,6 +39,26 @@ The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 ### Dividend ledger
 
 Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpaca's dividend history and the account's own fills (shares held before each ex-date × dividend per share). A $5,000 cash reserve is released as dividends are credited, so reinvested dividend money really exists in the account. Performance is reported as live-equivalent equity, and the SPY and NOBL benchmarks include their dividends.
+
+## Sectors
+
+The strategy aims to hold every GICS sector (`SECTORS_TO_HOLD` in `compute_cscores.py`). Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by score, at most 5 per sector.
+
+| Sector | In the current 30 | Note |
+|---|---|---|
+| Communication Services | 0 | No large Champion (Wiley is far below the size cut) |
+| Consumer Discretionary | 4 | All 4 eligible names |
+| Consumer Staples | 5 | At the cap |
+| Energy | 1 | CVX; XOM ranks low |
+| Financials | 4 | AFL, SPGI, TRI, TROW |
+| Health Care | 5 | At the cap |
+| Industrials | 5 | At the cap |
+| Information Technology | 1 | ADP; only ADP and IBM qualify |
+| Materials | 4 | |
+| Real Estate | 0 | REITs are excluded |
+| Utilities | 1 | NEE; utilities score low on payout and international sales |
+
+Sectors with no eligible Champion stay empty rather than relaxing the rules.
 
 ## Data sources
 

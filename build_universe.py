@@ -10,6 +10,7 @@ and writes data/universe.csv (kept) and data/universe_excluded.csv (dropped, wit
 
 Run:  uv run build_universe.py
 """
+import argparse
 import csv
 import json
 import os
@@ -33,8 +34,6 @@ OUT_EXCLUDED = ROOT / "data" / "universe_excluded.csv"
 
 MAX_UNIVERSE = 150
 LISTED_EXCHANGES = {"NYSE", "NASDAQ", "AMEX", "NYSE AMERICAN"}
-# Companies whose primary listing is outside the US (they trade in the US as secondary listings).
-FOREIGN_PRIMARY_COUNTRIES = {"CA"}
 PARTNERSHIP_RE = re.compile(r"\b(L\.?P\.?|Partners)\b", re.IGNORECASE)
 
 FMP_STABLE = "https://financialmodelingprep.com/stable/profile"
@@ -131,10 +130,7 @@ def exclusion_reason(champ, p):
         return "no FMP profile found"
     if p.get("isEtf") or p.get("isFund"):
         return "pooled product (ETF/fund)"
-    if p.get("isAdr"):
-        return "ADR"
-    if p.get("country") in FOREIGN_PRIMARY_COUNTRIES:
-        return f"foreign primary listing ({p.get('country')})"
+    # Any company trading on a US exchange is eligible, including ones based or primarily listed abroad.
     if champ["sector"] == "Real Estate" or p.get("sector") == "Real Estate" or "REIT" in (p.get("industry") or ""):
         return "REIT"
     if PARTNERSHIP_RE.search(champ["company"] or "") or PARTNERSHIP_RE.search(p.get("companyName") or ""):
@@ -149,11 +145,33 @@ def exclusion_reason(champ, p):
     return None
 
 
+def previous_profiles():
+    """Profiles rebuilt from the last run's outputs, for when FMP's daily limit is used up."""
+    profiles = {}
+    for path in (OUT_KEPT, OUT_EXCLUDED):
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                profiles[r["symbol"]] = {
+                    "companyName": r.get("company"), "sector": r.get("fmp_sector"), "industry": r.get("industry"),
+                    "country": r.get("country"), "exchange": r.get("exchange"),
+                    "price": float(r["price"]) if r.get("price") else None,
+                    "marketCap": float(r["market_cap"]) if r.get("market_cap") else None,
+                }
+    return profiles
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reuse-profiles", action="store_true",
+                    help="reuse market cap / exchange / country from the last run's CSVs instead of calling FMP")
+    args = ap.parse_args()
     load_dotenv(ROOT / ".env")
     api_key = os.getenv("FMP_API_KEY", "").strip()
-    if not api_key:
+    if not api_key and not args.reuse_profiles:
         sys.exit("FMP_API_KEY is empty. Add it to the .env file in the project folder.")
+    reused = previous_profiles() if args.reuse_profiles else None
 
     champions = load_champions()
     print(f"Loaded {len(champions)} Dividend Champions from {CHAMPIONS_FILE.name}")
@@ -165,7 +183,7 @@ def main():
     kept, excluded = [], []
     with requests.Session() as session:
         for i, champ in enumerate(champions, 1):
-            p = fetch_profile(session, champ["symbol"], api_key)
+            p = reused.get(champ["symbol"]) if reused is not None else fetch_profile(session, champ["symbol"], api_key)
             reason = exclusion_reason(champ, p)
             row = {
                 **champ,
@@ -181,7 +199,8 @@ def main():
             else:
                 kept.append(row)
             print(f"  [{i:3}/{len(champions)}] {champ['symbol']:6} {reason or 'ok'}")
-            time.sleep(0.25)
+            if reused is None:
+                time.sleep(0.25)
 
     median_cap = statistics.median(r["market_cap"] for r in kept)
     below = [r for r in kept if r["market_cap"] < median_cap]

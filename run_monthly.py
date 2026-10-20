@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 
-from compute_cscores import dividend_flags
+from compute_cscores import MAX_PER_SECTOR, SECTORS_TO_HOLD, TARGET_POSITIONS, dividend_flags, select_portfolio
 
 ROOT = Path(__file__).parent
 CSCORES = ROOT / "data" / "cscores.csv"
@@ -40,8 +40,6 @@ TRADING = "https://paper-api.alpaca.markets/v2"
 DATA = "https://data.alpaca.markets"
 
 # ---- CONFIG (methodology) ----
-TARGET_POSITIONS = 30
-MAX_PER_SECTOR = 5
 DCA_MONTHS = 6
 VALUE_OVERLAY = True
 VALUE_TIME_STOP_MONTHS = 6
@@ -228,28 +226,13 @@ def load_scores():
     return sorted(rows, key=lambda r: r["rank"])
 
 
-def select_initial(scores):
-    selected, per_sector = [], {}
-    for r in scores:  # pass 1: best name in every sector
-        if r["sector"] not in per_sector:
-            selected.append(r)
-            per_sector[r["sector"]] = 1
-    for r in scores:  # pass 2: fill by rank under the sector cap
-        if len(selected) >= TARGET_POSITIONS:
-            break
-        if r in selected or per_sector[r["sector"]] >= MAX_PER_SECTOR:
-            continue
-        selected.append(r)
-        per_sector[r["sector"]] += 1
-    return selected
-
-
 def replacement(scores, sector, selected_syms, sold_syms):
     per_sector = {}
     for r in scores:
         if r["symbol"] in selected_syms:
             per_sector[r["sector"]] = per_sector.get(r["sector"], 0) + 1
-    pool = [r for r in scores if r["symbol"] not in selected_syms and r["symbol"] not in sold_syms]
+    pool = [r for r in scores if r["symbol"] not in selected_syms and r["symbol"] not in sold_syms
+            and r["sector"] in SECTORS_TO_HOLD]
     same = next((r for r in pool if r["sector"] == sector), None)
     return same or next((r for r in pool if per_sector.get(r["sector"], 0) < MAX_PER_SECTOR), None)
 
@@ -306,7 +289,7 @@ def main():
 
     # --- selection ---
     if first_run:
-        sel_rows = select_initial(scores)
+        sel_rows = select_portfolio(scores)
         selected = [{"symbol": r["symbol"], "sector": r["sector"], "cscore": r["cscore"],
                      "selected_date": today.isoformat(), "first_buy_date": None} for r in sel_rows]
         sold_log = []

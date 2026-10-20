@@ -42,6 +42,21 @@ CACHE_DAYS = 7
 INTL_SALES_FACTOR = True
 TARGET_POSITIONS = 30
 MAX_PER_SECTOR = 5
+# The 11 GICS sectors the strategy wants to hold. Selection takes the best-scoring name in each listed sector
+# that has an eligible company, then fills the rest by score. Remove a sector here to keep it out entirely.
+SECTORS_TO_HOLD = [
+    "Communication Services",
+    "Consumer Discretionary",
+    "Consumer Staples",
+    "Energy",
+    "Financials",
+    "Health Care",
+    "Industrials",
+    "Information Technology",
+    "Materials",
+    "Real Estate",
+    "Utilities",
+]
 FREEZE_MONTHS = 15
 MAX_DPS_AGE_DAYS = 270  # older SEC per-share dividend data counts as missing
 # User rule: these always take the high-payout penalty (-2), whatever the computed ratio.
@@ -68,6 +83,13 @@ CAPEX = ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProduct
          "PaymentsForCapitalImprovements", "PaymentsToAcquireOtherPropertyPlantAndEquipment"]
 NET_INCOME = ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"]
 DPS = ["CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid"]
+# IFRS equivalents, for foreign filers (40-F / 20-F). They file annual XBRL only, so these TTMs are fiscal years.
+IFRS_DIVIDENDS_PAID = ["DividendsPaidClassifiedAsFinancingActivities", "DividendsPaid",
+                       "DividendsPaidToEquityHoldersOfParentClassifiedAsFinancingActivities", "DividendsPaidOrdinaryShares"]
+IFRS_OPERATING_CF = ["CashFlowsFromUsedInOperatingActivities"]
+IFRS_CAPEX = ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+              "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"]
+IFRS_NET_INCOME = ["ProfitLossAttributableToOwnersOfParent", "ProfitLoss"]
 
 
 # ---------- SEC EDGAR ----------
@@ -89,7 +111,7 @@ def sec_get(session, url, cache_name):
     return data
 
 
-def durations(facts, concepts, unit):
+def durations(facts, concepts, unit, taxonomy="us-gaap"):
     """Duration facts as {(start, end): value}, merged across equivalent concepts.
 
     Companies rename concepts over time (e.g. operating cash flow moving to a 'continuing operations'
@@ -98,7 +120,7 @@ def durations(facts, concepts, unit):
     """
     out = {}
     for concept in reversed(concepts):
-        node = facts.get("facts", {}).get("us-gaap", {}).get(concept, {}).get("units", {}).get(unit, [])
+        node = facts.get("facts", {}).get(taxonomy, {}).get(concept, {}).get("units", {}).get(unit, [])
         for f in sorted(node, key=lambda f: f.get("filed", "")):
             if f.get("start") and f.get("end"):
                 out[(date.fromisoformat(f["start"]), date.fromisoformat(f["end"]))] = f["val"]
@@ -180,20 +202,42 @@ def dps_growth(facts, years):
 
 
 def payout_from_sec(facts):
-    div_periods = durations(facts, DIVIDENDS_PAID, "USD")
-    divs, end = ttm(div_periods)
+    gaap = facts.get("facts", {}).get("us-gaap", {})
+    units = {u for c in DIVIDENDS_PAID if c in gaap for u in gaap[c]["units"]}
+    unit = "USD" if "USD" in units or not units else sorted(units)[0]  # e.g. CAD for Canadian US-GAAP filers
+    divs, end = ttm(durations(facts, DIVIDENDS_PAID, unit))
+    if divs is None:
+        return payout_from_ifrs(facts)
+    payout, basis, flags = _payout_rest(facts, divs, end, OPERATING_CF, CAPEX, NET_INCOME, unit, "us-gaap")
+    return payout, basis + ("" if unit == "USD" else f" ({unit})"), flags
+
+
+def payout_from_ifrs(facts):
+    """Payout for IFRS filers (e.g. Canadian 40-F filers): annual figures, in the reporting currency."""
+    ifrs = facts.get("facts", {}).get("ifrs-full", {})
+    units = next((list(ifrs[c]["units"]) for c in IFRS_DIVIDENDS_PAID if c in ifrs), None)
+    if not units:
+        return None, "dividends paid not found in SEC data", []
+    unit = units[0]
+    divs, end = ttm(durations(facts, IFRS_DIVIDENDS_PAID, unit, "ifrs-full"))
     if divs is None:
         return None, "dividends paid not found in SEC data", []
+    payout, basis, flags = _payout_rest(facts, divs, end, IFRS_OPERATING_CF, IFRS_CAPEX, IFRS_NET_INCOME,
+                                        unit, "ifrs-full")
+    return payout, f"{basis} (IFRS, {unit})", flags
+
+
+def _payout_rest(facts, divs, end, ocf_concepts, capex_concepts, ni_concepts, unit, taxonomy):
     flags = []
-    ocf, _ = ttm(durations(facts, OPERATING_CF, "USD"), end)
+    ocf, _ = ttm(durations(facts, ocf_concepts, unit, taxonomy), end)
     if ocf is not None:
-        capex, _ = ttm(durations(facts, CAPEX, "USD"), end)
+        capex, _ = ttm(durations(facts, capex_concepts, unit, taxonomy), end)
         if capex is None:
             flags.append("no capex line in SEC data; payout uses operating cash flow")
-        fcf = ocf - (capex or 0)
+        fcf = ocf - abs(capex or 0)
         basis = "FCF" if capex is not None else "OCF only"
         return (abs(divs) / fcf if fcf > 0 else -1.0), f"{basis}, TTM to {end}", flags
-    ni, _ = ttm(durations(facts, NET_INCOME, "USD"), end)
+    ni, _ = ttm(durations(facts, ni_concepts, unit, taxonomy), end)
     if ni is not None:
         return (abs(divs) / ni if ni > 0 else -1.0), f"EPS fallback, TTM to {end}", flags
     return None, f"no cash flow or earnings for TTM to {end}", flags
@@ -252,10 +296,13 @@ def dividend_flags(history, today):
 
 XBRLI = "{http://www.xbrl.org/2003/instance}"
 XBRLDI = "{http://xbrl.org/2006/xbrldi}"
+# 10-K for US filers; 40-F (Canada) and 20-F (other foreign) filers report in IFRS.
+ANNUAL_FORMS = ("10-K", "40-F", "20-F")
 REVENUE_CONCEPTS = ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
                     "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "SalesRevenueGoodsNet",
                     # insurers report geography on premiums rather than revenue
-                    "PremiumsEarnedNet", "PremiumsWrittenGross", "PremiumsWrittenNet")
+                    "PremiumsEarnedNet", "PremiumsWrittenGross", "PremiumsWrittenNet",
+                    "Revenue", "RevenueFromContractsWithCustomers")  # last two: IFRS filers
 NON_US_RE = re.compile(r"(non|outside|otherthan|excluding|ex)(us|unitedstates|usa)|international|foreign|nondomestic")
 FOREIGN_WORDS = ("Japan", "Europe", "EMEA", "Asia", "Pacific", "Latin", "Canada", "China", "International",
                  "Foreign", "Africa", "MiddleEast", "UnitedKingdom", "Germany", "Mexico", "Brazil", "Australia",
@@ -295,7 +342,7 @@ def latest_10k_instance(session, cik):
     """(report_date, XBRL instance bytes) for the latest 10-K, or (None, None)."""
     sub = sec_get(session, f"https://data.sec.gov/submissions/CIK{cik:010d}.json", f"submissions_{cik}.json")
     recent = (sub or {}).get("filings", {}).get("recent", {})
-    idx = next((i for i, f in enumerate(recent.get("form", [])) if f == "10-K"), None)
+    idx = next((i for i, f in enumerate(recent.get("form", [])) if f in ANNUAL_FORMS), None)
     if idx is None:
         return None, None
     acc = recent["accessionNumber"][idx].replace("-", "")
@@ -337,8 +384,8 @@ def intl_from_instance(xml_bytes):
         if any(d[0].endswith("ConsolidationItemsAxis") for d in dims):
             continue
         value = float(el.text)
-        geo = [m for a, m in dims if a.endswith("StatementGeographicalAxis")]
-        seg = [m for a, m in dims if a.endswith("StatementBusinessSegmentsAxis")]
+        geo = [m for a, m in dims if a.endswith(("StatementGeographicalAxis", "GeographicalAreasAxis"))]
+        seg = [m for a, m in dims if a.endswith("SegmentsAxis")]
         if not dims:
             totals[(concept, end)] = value
         elif len(dims) == 1:
@@ -377,6 +424,8 @@ def intl_from_instance(xml_bytes):
             if share is not None:
                 note = {"segment": " (business segments)", "geo_x_segment": " (summed across business segments)"}
                 return max(0.0, min(1.0, share)), f"{how}, FY ending {end}{note.get(axis, '')}"
+    if not totals:  # e.g. a 40-F whose XBRL covers only the cover page: unknown, not US-only
+        return None, "no revenue data in the annual filing's XBRL"
     return 0.0, "no geographic revenue disclosure (treated as US-only)"
 
 
@@ -391,6 +440,26 @@ def intl_sales(session, cik):
     result = intl_from_instance(xml_bytes)
     path.write_text(json.dumps(result), encoding="utf-8")
     return result
+
+
+# ---------- selection (methodology Step 3) ----------
+
+def select_portfolio(ranked):
+    """Best name in every sector we hold (pass 1), then fill by rank under the sector cap (pass 2)."""
+    pool = [r for r in ranked if r["sector"] in SECTORS_TO_HOLD]
+    selected, per_sector = [], {}
+    for r in pool:
+        if r["sector"] not in per_sector:
+            selected.append(r)
+            per_sector[r["sector"]] = 1
+    for r in pool:
+        if len(selected) >= TARGET_POSITIONS:
+            break
+        if r in selected or per_sector[r["sector"]] >= MAX_PER_SECTOR:
+            continue
+        selected.append(r)
+        per_sector[r["sector"]] += 1
+    return sorted(selected, key=lambda r: r["rank"])
 
 
 # ---------- scoring (methodology Step 2) ----------
@@ -437,6 +506,14 @@ def main():
             alpaca_hist = alpaca_dividends(a, [r["symbol"] for r in universe],
                                            today - timedelta(days=800), today + timedelta(days=60))
             alpaca_hist = {s: [(d, v) for d, v in h if d <= today] for s, h in alpaca_hist.items()}
+            # Latest trade prices, fresher than the universe snapshot (and present for every symbol).
+            syms = ",".join(r["symbol"].replace("-", ".") for r in universe)
+            trades = a.get("https://data.alpaca.markets/v2/stocks/trades/latest",
+                           params={"symbols": syms, "feed": "iex"}, timeout=30).json().get("trades", {})
+            for r in universe:
+                price = (trades.get(r["symbol"].replace("-", ".")) or {}).get("p")
+                if price:
+                    r["price"] = price
     yield_source = "Alpaca dividend history" if alpaca_hist is not None else "SEC dividends per share declared"
     print(f"Yield source: {yield_source}")
 
@@ -487,7 +564,7 @@ def main():
                 # The Champions spreadsheet's Dividend column is misaligned across rows, so it is not a fallback.
                 dps_basis = f"SEC per-share data ends {dps_end}" if ttm_dps else "no SEC per-share data"
                 ttm_dps = None
-        yld = ttm_dps / r["price"] if ttm_dps else None
+        yld = ttm_dps / r["price"] if ttm_dps and r["price"] else None
         if yld is None:
             flags.append(f"yield missing ({dps_basis})")
 
@@ -533,20 +610,10 @@ def main():
     print(f"\nWrote {len(rows)} scored companies -> {OUT.relative_to(ROOT)}"
           f"  (INTL_SALES_FACTOR={'ON' if INTL_SALES_FACTOR else 'OFF'}, max score {15 if INTL_SALES_FACTOR else 13})")
 
-    # Step 3 preview: best per sector, then fill by rank respecting the sector cap.
-    selected, per_sector = [], {}
-    for x in rows:
-        if x["sector"] not in per_sector:
-            selected.append(x)
-            per_sector[x["sector"]] = 1
-    for x in rows:
-        if len(selected) >= TARGET_POSITIONS:
-            break
-        if x in selected or per_sector[x["sector"]] >= MAX_PER_SECTOR:
-            continue
-        selected.append(x)
-        per_sector[x["sector"]] += 1
-    selected.sort(key=lambda x: x["rank"])
+    selected = select_portfolio(rows)
+    per_sector = {}
+    for x in selected:
+        per_sector[x["sector"]] = per_sector.get(x["sector"], 0) + 1
 
     print(f"\nSelection preview ({len(selected)} names):")
     print(f"{'rank':>4} {'sym':6} {'C':>3}  {'sector':24} {'yield':>6} {'payout':>7}  flags")
