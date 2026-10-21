@@ -41,6 +41,7 @@ You are operating **Compound Crowns**, a buy-and-hold dividend growth bot. It ho
 | `run_monthly.py` | Monthly check, buy plan, sell rules, dividend check, report; Alpaca orders or Robinhood ticket |
 | `check_setup.py` | Setup checklist |
 | `court_picks.txt` | Court Picks: up to 10 extra companies the user chooses |
+| `suggest_court_picks.py` | Optional REIT/BDC screen (10+ year streaks) that suggests Court Picks; never edits `court_picks.txt` |
 | `docs/METHODOLOGY.md` | Full rules |
 | `docs/MONTHLY_CHECK.md` | Report contents and scheduling (cron, Task Scheduler, agents) |
 | `docs/AGENT_PROMPT.md` | Paste-in monthly prompt for agents that don't read this file |

@@ -100,6 +100,14 @@ REITs and BDCs pay mostly **ordinary** (non-qualified) dividends, which are taxe
 
 Even when they're allowed, few REITs and BDCs survive the methodology. REITs must pay out most of their income and BDCs pay variable dividends, so few have raised their dividend every year for 25 years, and the long-streak REITs that do exist are often below the size cut. BDCs as an industry are too young for 25-year streaks. To own one anyway, add it as a [Court Pick](#dethroned-regents-and-court-picks).
 
+To find candidates, run the optional REIT/BDC screen. It lists exchange-listed REITs and BDCs with 10+ consecutive years of higher dividends per share, from free SEC data, and only suggests; you add any you want to `court_picks.txt` yourself:
+
+```bash
+uv run suggest_court_picks.py
+```
+
+SEC dividend data starts around 2009, so streaks are minimums. Names marked "verify" had no decrease as far back as the data goes; confirm the full history before relying on it. BDCs seldom appear because most pay variable or supplemental dividends rather than steady raises.
+
 ## Data sources
 
 - **Dividend Champions list:** the U.S. Dividend Champions spreadsheet published by [Dividend Growth Investor](https://www.dividendgrowthinvestor.com/). Download it yourself into `data/raw/` (it isn't redistributed here).
@@ -128,6 +136,7 @@ uv run compute_crown_scores.py                     # step 2: data/crown_scores.c
 uv run run_monthly.py                              # monthly check (dry run): report in data/reports/
 uv run run_monthly.py --execute                    # alpaca: place the orders; robinhood: record the month after placing the ticket
 uv run run_monthly.py --first-trading-day-only     # for schedulers: runs the check only on the month's first trading day
+uv run suggest_court_picks.py                      # optional: REIT/BDC Court Pick candidates (suggestions only)
 ```
 
 `--broker alpaca|robinhood` overrides `BROKER` for one run. `--deploy-all` (with `--execute`) is a one-time option that buys every selected stock up to its full target at once, instead of building positions over six months.
