@@ -96,19 +96,20 @@ If `VALUE_OVERLAY=OFF`, buy exactly 1 tranche per run.
 2. For each selected stock, compute `gap` = target value − current market value. If `gap ≤ 0`, buy nothing.
 3. Order value = min(gap, tranche × overlay multiplier from Step 4).
 4. Spend cash in this priority order: (a) stocks with the largest % gap vs target, (b) higher Crown-score. Stop when cash reaches `CASH_BUFFER`.
-5. **Dividends received are not auto-reinvested by symbol.** They go into the cash pool and get deployed by this same priority logic, which naturally steers income to the most underweight holdings.
+5. **No DRIP.** Dividends received are never auto-reinvested into the stock that paid them. Each run checks for dividends paid since the last run, reports them, and pools them with cash. Cash is deployed to the most underweight **sector** first, then the most underweight stock within it.
 6. **Order mechanics:**
    - Prefer **whole-share limit orders**, `time_in_force=day`, limit = latest ask + 0.10%.
    - If one share costs more than the order value, use a **fractional day order** (qty with decimals) if the asset is fractionable; otherwise skip and carry the gap to the next run.
    - Skip any order under $25.
-7. Never sell to rebalance overweights. The only exception is the hard cap: if any position is above `POSITION_HARD_CAP` of equity, trim it back to 6%.
+7. Never sell to rebalance overweights; sales are taxable events. A position above `POSITION_HARD_CAP` is flagged in the report, not trimmed (`TRIM_OVERWEIGHTS = False` by default). New money goes to underweight holdings instead.
+8. This is a monthly buy-and-hold bot: at most one executed run per calendar month.
 
 ## STEP 6 — SELL RULES (the only reasons to sell)
 Check every holding every run:
 1. **Dividend cut or suspension:** the declared regular dividend is lower than the previous one (use `get_corporate_actions` and company announcements; ignore special dividends) → **sell 100%** this run.
 2. **Dividend freeze:** no increase in the regular dividend for 15+ months (streak broken) → **sell 100%** this run.
 3. **Corporate event:** acquired, delisted, or converted into a non-eligible structure → sell 100%, or let a cash acquisition settle.
-4. **Hard-cap trim** (see Step 5.7).
+4. ~~Hard-cap trim~~ — off by default (see Step 5.7).
 
 Do **not** sell for price drops, Crown-score drops, bad news, or "valuation." Price drops mean the overlay buys more.
 

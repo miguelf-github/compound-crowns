@@ -30,12 +30,15 @@ The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
 **US companies that sell worldwide.** The universe is US-listed companies, but a business that sells only in the US is concentrated in a single market, so US-only revenue costs a point and broad international sales earn up to two. The share comes from the geographic revenue table tagged in each company's latest 10-K (or geographic business segments, such as Aflac Japan). A company with no geographic disclosure is treated as US-only and flagged.
 
-**Yield rule.** A yield under 1.5% takes too long to compound into meaningful income, so such a company can only be selected if its 10-year dividend growth is 10% or more (the −1 yield point still applies). Today that keeps fast growers like Parker-Hannifin and Sherwin-Williams eligible and blocks slower ones like Linde and Caterpillar.
+**Yield rule.** A yield under 1.5% takes too long to compound into meaningful income, so such a company can only be selected if its 10-year dividend growth is 10% or more (the −1 yield point still applies).
 
 ### Monthly rules
 
+This is a buy-and-hold bot, not a trader. It runs once a month and refuses a second executed run in the same month.
+
 - **Buying:** each stock targets an equal weight (99% of equity ÷ 30). Normal runs buy one sixth of the target per month, scaled by a value check: yield vs. the stock's own 5-year average yield (cheap = 2×, fair = 1×, slightly rich = ½×, expensive = skip; a 6-month time stop buys anyway).
-- **Selling:** only for a dividend cut, a dividend freeze (no raise in 15+ months), a corporate event, or a trim if a position grows past 8%.
+- **Dividends (no DRIP):** dividends are never reinvested automatically into the stock that paid them, and any broker DRIP should stay off. Each run checks for dividends received since the last run, reports them, and pools them with cash. The buy engine then sends that cash to the most underweight sector first, and within it to the most underweight stock.
+- **Selling, kept to a minimum:** every sale is a taxable event, so the bot only sells on a dividend cut, a dividend freeze (no raise in 15+ months), or a corporate event. Positions that grow overweight are not trimmed; the report flags them and new money goes elsewhere. The January re-screen never sells a holding just because it dropped out of the top 30.
 - **Safety:** refuses to trade unless the account is paper and the market is open; never sends duplicate orders; dry run by default.
 
 ### Dividend ledger
@@ -44,23 +47,11 @@ Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpac
 
 ## Sectors
 
-The strategy aims to hold every GICS sector (`SECTORS_TO_HOLD` in `compute_crown_scores.py`). Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by score, at most 5 per sector.
+The strategy aims to hold every GICS sector, listed in `SECTORS_TO_HOLD` in `compute_crown_scores.py`:
 
-| Sector | In the current 30 | Note |
-|---|---|---|
-| Communication Services | 0 | No large Champion (Wiley is far below the size cut) |
-| Consumer Discretionary | 4 | All 4 eligible names |
-| Consumer Staples | 5 | At the cap |
-| Energy | 1 | CVX; XOM ranks low |
-| Financials | 4 | AFL, SPGI, TRI, TROW |
-| Health Care | 5 | At the cap |
-| Industrials | 5 | At the cap |
-| Information Technology | 1 | ADP; only ADP and IBM qualify |
-| Materials | 4 | |
-| Real Estate | 0 | REITs are excluded |
-| Utilities | 1 | NEE; utilities score low on payout and international sales |
+Communication Services · Consumer Discretionary · Consumer Staples · Energy · Financials · Health Care · Industrials · Information Technology · Materials · Real Estate · Utilities
 
-Sectors with no eligible Champion stay empty rather than relaxing the rules.
+Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by Crown-score, at most 5 per sector. Which companies qualify changes over time, so the bot rebuilds the picture every January. A sector with no eligible company stays empty rather than relaxing the rules. Remove a sector from the list to keep it out entirely.
 
 ## Data sources
 

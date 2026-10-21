@@ -51,6 +51,15 @@ MIN_ORDER_USD = 25
 BENCHMARKS = ("SPY", "NOBL")
 # ---- additions agreed after the methodology review ----
 DIVIDEND_RESERVE = 5_000.0      # paper cash held back and released as dividends are credited
+# No DRIP: dividends are never reinvested automatically into the stock that paid them (keep any broker DRIP
+# off too). Each run reports the dividends received since the last run, and the buy engine deploys them,
+# with any other spendable cash, into the most underweight sectors first.
+DRIP_ENABLED = False
+# Low turnover: this is a buy-and-hold bot, not a trader. Every sale is a taxable event, so the only sells are
+# rule exits (dividend cut, dividend freeze, corporate event). Overweight positions are not trimmed; new money
+# goes to the underweight ones instead. Set TRIM_OVERWEIGHTS = True to trim above POSITION_HARD_CAP.
+TRIM_OVERWEIGHTS = False
+ONE_EXECUTED_RUN_PER_MONTH = True  # override with --allow-second-run
 MAX_SPEND_PCT_PER_RUN = 0.40    # emergency stop: refuse --execute if buys exceed this share of equity
 CSCORES_MAX_AGE_DAYS = 45       # warn when the screen is older than this
 LIMIT_OFFSET = 0.001            # buy at ask + 0.10%, sell at bid - 0.10%
@@ -249,7 +258,11 @@ def main():
     ap.add_argument("--deploy-all", action="store_true",
                     help="one-time: buy every selected stock up to its full target now, skipping the DCA spread, "
                          "the value overlay and the per-run spending cap (user-approved initial deployment)")
+    ap.add_argument("--allow-second-run", action="store_true",
+                    help="allow a second executed run in the same calendar month")
     args = ap.parse_args()
+    if DRIP_ENABLED:
+        sys.exit("DRIP_ENABLED is not supported: dividends are pooled and sent to underweight sectors.")
     sys.stdout.reconfigure(encoding="utf-8")  # the report uses ✅/❌; Windows consoles default to cp1252
     load_dotenv(ROOT / ".env")
     key, secret = os.getenv("ALPACA_API_KEY", "").strip(), os.getenv("ALPACA_SECRET_KEY", "").strip()
@@ -341,10 +354,13 @@ def main():
         if reason:
             sells.append({"symbol": sym, "qty": qty, "value": mv, "reason": reason, "full": True})
             alerts.append(f"SELL {sym}: {reason}")
-        elif mv > POSITION_HARD_CAP * syn_equity:
+        elif mv > POSITION_HARD_CAP * syn_equity and TRIM_OVERWEIGHTS:
             trim_value = mv - TRIM_TO * syn_equity
             sells.append({"symbol": sym, "qty": None, "value": trim_value, "full": False,
                           "reason": f"trim: weight {mv / syn_equity:.1%} > cap {POSITION_HARD_CAP:.0%}"})
+        elif mv > POSITION_HARD_CAP * syn_equity:
+            alerts.append(f"{sym} is {mv / syn_equity:.1%} of equity, above the {POSITION_HARD_CAP:.0%} cap. "
+                          f"Not trimmed (TRIM_OVERWEIGHTS is off); new money goes to other holdings.")
 
     for s in sells:
         if s["full"] and s["symbol"] in selected_syms:
@@ -399,7 +415,14 @@ def main():
         candidates.append({"symbol": sym, "crown_score": s["crown_score"], "gap_pct": gap / target,
                            "value": gap if args.deploy_all else min(gap, tranche * mult), "reason": why, "quote": q})
 
-    candidates.sort(key=lambda c: (-c["gap_pct"], -c["crown_score"]))
+    # Cash (including dividends) goes to the most underweight sector first, then the most underweight stock in it.
+    sector_target, sector_mv = {}, {}
+    for h in holdings:
+        sector_target[h["sector"]] = sector_target.get(h["sector"], 0) + h["target"]
+        sector_mv[h["sector"]] = sector_mv.get(h["sector"], 0) + h["mv"]
+    sector_gap = {s: 1 - sector_mv[s] / t for s, t in sector_target.items() if t}
+    sector_of = {h["symbol"]: h["sector"] for h in holdings}
+    candidates.sort(key=lambda c: (-sector_gap.get(sector_of[c["symbol"]], 0), -c["gap_pct"], -c["crown_score"]))
     planned, budget = [], spendable
     for c in candidates:
         value = min(c["value"], budget)
@@ -448,6 +471,10 @@ def main():
     if args.execute:
         if not market_open:
             sys.exit(f"Market is closed (next open {clock.get('next_open')}). Run without --execute for the plan.")
+        if (ONE_EXECUTED_RUN_PER_MONTH and state and state.get("last_run", "")[:7] == today.isoformat()[:7]
+                and not args.allow_second_run):
+            sys.exit(f"Already executed a run this month ({state['last_run']}). This bot trades monthly; "
+                     f"use --allow-second-run only if that run failed.")
         if buy_total > MAX_SPEND_PCT_PER_RUN * syn_equity and not args.deploy_all:
             sys.exit(f"Emergency stop: buys ${buy_total:,.0f} exceed {MAX_SPEND_PCT_PER_RUN:.0%} of equity.")
         for o in open_orders:  # rule 5: cancel stale orders from earlier runs
@@ -521,6 +548,23 @@ def main():
         f"SCREEN USED: {scores[0]['as_of']} crown_scores.csv ({len(scores)} scored) | "
         f"{'first run: selection built now' if first_run else 'selection from state'} | re-screened this run? N",
         "",
+        f"DIVIDEND CHECK (DRIP off: dividends are pooled with cash and sent to the most underweight sectors):",
+    ]
+    last_run = (state or {}).get("last_run")
+    received = [x for x in ledger if x["status"] == "credited" and (not last_run or x["pay_date"] > last_run)]
+    upcoming = [x for x in ledger if x["status"] == "pending"]
+    lines.append(f"received since {last_run or 'inception'}: {len(received)} payments, "
+                 f"${sum(x['amount'] for x in received):,.2f} | declared, not yet paid: {len(upcoming)} payments, "
+                 f"${sum(x['amount'] for x in upcoming):,.2f}")
+    for x in received:
+        lines.append(f"- {x['symbol']}: ${x['amount']:,.2f} paid {x['pay_date']}{' (special)' if x['special'] else ''}")
+    lines += ["", "SECTOR WEIGHTS (buys go to the most underweight sector first):",
+              "| sector | weight | target | gap |", "|---|---|---|---|"]
+    for sec in sorted(sector_target, key=lambda s: -sector_gap.get(s, 0)):
+        lines.append(f"| {sec} | {sector_mv[sec] / syn_equity:.1%} | {sector_target[sec] / syn_equity:.1%} | "
+                     f"{sector_gap.get(sec, 0):.0%} |")
+    lines += [
+        "",
         "HOLDINGS TABLE:",
         "| symbol | sector | Crown | Y ratio | shares | mkt value | weight | target | gap | streak status |",
         "|---|---|---|---|---|---|---|---|---|---|",
@@ -534,7 +578,7 @@ def main():
         lines.append(f"| {p['symbol']} | {p['side']} | {p['qty']:g} | limit day | ${p['limit']:.2f} | ${p['value']:,.2f} | "
                      f"{p['reason']} | {p.get('result', '-')} |")
     lines += ["", "ORDERS SKIPPED:"] + ([f"- {s}: {r}" for s, r in skipped] or ["- none"])
-    lines += ["", "SELL-RULE ALERTS:"] + ([f"- {a}" for a in alerts] or ["- none"])
+    lines += ["", "ALERTS (sell rules, overweights, reserve):"] + ([f"- {a}" for a in alerts] or ["- none"])
     lines += ["", "DATA FLAGS:"] + ([f"- {d}" for d in data_flags] or ["- none"])
     if notes:
         lines += ["", "NOTES:"] + [f"- {n}" for n in notes]
