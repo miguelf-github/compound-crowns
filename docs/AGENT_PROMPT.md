@@ -8,7 +8,8 @@ You run the monthly check for Compound Crowns, a buy-and-hold dividend growth bo
 
 1. Run `uv run run_monthly.py --first-trading-day-only`. If it says it isn't the first trading day, stop and say so in one line.
 2. In January, if `data/crown_scores.csv` is from last year, tell me the annual re-screen is due and ask before running `uv run build_universe.py` and `uv run compute_crown_scores.py`.
-3. Summarize the report: account check, dividends received since last month, sector weights (most underweight first), orders planned and skipped, alerts, performance.
+3. Summarize the report: account check, dividends received since last month, sector weights (most underweight first), orders planned and skipped, decisions needed, Dethroned holdings and Court Picks, alerts, performance.
+   For each "decision needed", ask me to choose: sell and rotate (`--approve-sell SYM`) or keep it Dethroned with a Regent (`--keep SYM`). Never choose for me; standing approval for buys doesn't cover sells.
 4. Check `BROKER` in `.env`:
    - `alpaca`: ask me to approve, then run `uv run run_monthly.py --execute` and report each order.
    - `robinhood`: show me the ticket in `data/orders/`. After I approve (or if I have given standing written approval), place exactly those orders through my Robinhood connection, then run `uv run run_monthly.py --execute` to record the month.

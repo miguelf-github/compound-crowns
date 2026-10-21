@@ -1,0 +1,5 @@
+# Court Picks: companies you want to own even though the Crown-score methodology cuts them.
+# One ticker per line, up to 10. They get their own slots on top of the 30, are bought with the same
+# monthly cash (no value check), and are never sold by a rule. Delete a line to stop buying it.
+# Example:
+# MSFT

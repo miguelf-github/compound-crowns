@@ -59,8 +59,20 @@ This is a buy-and-hold bot, not a trader. It runs once a month and refuses a sec
 
 - **Buying:** each stock targets an equal weight (99% of equity ÷ 30). Normal runs buy one sixth of the target per month, scaled by a value check: yield vs. the stock's own 5-year average yield (cheap = 2×, fair = 1×, slightly rich = ½×, expensive = skip; a 6-month time stop buys anyway).
 - **Dividends (no DRIP):** dividends are never reinvested automatically into the stock that paid them, and any broker DRIP should stay off. Each run checks for dividends received since the last run, reports them, and pools them with cash. The buy engine then sends that cash to the most underweight sector first, and within it to the most underweight stock.
-- **Selling, kept to a minimum:** every sale is a taxable event, so the bot only sells on a dividend cut, a dividend freeze (no raise in 15+ months), or a corporate event. Positions that grow overweight are not trimmed; the report flags them and new money goes elsewhere. The January re-screen never sells a holding just because it dropped out of the top 30.
+- **Selling, only with your approval:** every sale is a taxable event. A dividend cut or suspension, a dividend freeze (no raise in 15+ months) or a corporate event only *flags* a holding; the bot pauses new money to it and asks you to decide (see below). Positions that grow overweight are never trimmed; the report flags them and new money goes elsewhere. The January re-screen never sells a holding just because it dropped out of the top 30.
 - **Safety:** dry run by default. Alpaca: refuses to trade unless the account is paper and the market is open; never sends duplicate orders. Robinhood: never places orders; it writes a ticket for you or your approved agent.
+
+### Dethroned, Regents and Court Picks
+
+When a sell rule flags a holding, it appears under **Decisions needed** in the monthly report, gets no new money, and waits for your choice:
+
+| Your choice | Command | What happens |
+|---|---|---|
+| Sell and rotate | `uv run run_monthly.py --execute --approve-sell SYM` | The bot sells it and the next-best company in the same sector takes the slot. |
+| Keep it | `uv run run_monthly.py --execute --keep SYM` | The holding becomes **Dethroned**: you keep the shares, but it gets no new money. A **Regent**, the next-best company in the same sector, takes its slot and receives the new money. A Dethroned holding is only ever sold if you later approve it with `--approve-sell`. |
+| Decide later | (nothing) | It stays paused and is listed again next month. |
+
+**Court Picks** are companies you want to own even though the methodology cuts them. List up to **10** in `court_picks.txt`, one ticker per line. Each gets its own extra slot on top of the 30 at the same target weight, is bought with the monthly cash (without the value check), and is never sold by a rule. Delete the line to stop buying it.
 
 ### Dividend ledger (Alpaca paper)
 

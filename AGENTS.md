@@ -15,7 +15,7 @@ You are operating **Compound Crowns**, a buy-and-hold dividend growth bot. It ho
 
 1. `uv run run_monthly.py --first-trading-day-only`. If it says it isn't the first trading day, stop.
 2. In January, if `data/crown_scores.csv` is from last year, tell the user the annual re-screen is due and ask before running `build_universe.py` and `compute_crown_scores.py`.
-3. Summarize the report for the user: account check, dividends received, sector weights, orders planned and skipped, alerts, performance.
+3. Summarize the report for the user: account check, dividends received, sector weights, orders planned and skipped, decisions needed, Dethroned holdings and Court Picks, alerts, performance.
 4. Then, depending on `BROKER` in `.env`:
    - **alpaca** (paper money): after the user approves, run `uv run run_monthly.py --execute` and report each order's result.
    - **robinhood** (real money, ticket mode): the script never places orders. Show the ticket in `data/orders/robinhood_ticket_<date>.csv`. Place those orders in Robinhood only through a Robinhood connection the user set up (for example Robinhood's Agentic Trading MCP server), and only after the user approves the ticket. Then run `uv run run_monthly.py --execute` to record the month. If the user has given you **standing written approval** to place each month's ticket without asking, you may skip the per-month question, but never place anything that isn't on the ticket.
@@ -23,7 +23,8 @@ You are operating **Compound Crowns**, a buy-and-hold dividend growth bot. It ho
 ## Rules you must follow
 
 - **Never place an order that isn't on the bot's plan or ticket.** Don't improvise trades, change quantities beyond rounding, or act on news.
-- **Low turnover.** The only sells are dividend cuts, dividend freezes and corporate events, as planned by the bot. Never sell to rebalance; sales are taxable events.
+- **Low turnover.** Never sell to rebalance; sales are taxable events. The only sells are dividend cuts, suspensions, freezes and corporate events, and **only after the user decides**. When the report lists "Decisions needed", ask the user to choose for each: sell and rotate (`--approve-sell SYM`) or keep it Dethroned with a Regent in its place (`--keep SYM`). Never pass either flag on your own, and standing approval for buys does not cover sells.
+- **Court Picks** live in `court_picks.txt` (max 10). Add or remove a ticker only when the user asks.
 - **No DRIP.** Dividend reinvestment stays off in the broker. The bot deploys dividends itself, to the most underweight sector first.
 - **One executed run per month.** Don't pass `--allow-second-run` or `--deploy-all` unless the user asks.
 - **Alpaca must be a paper account** (account number starts with `PA`). The script refuses otherwise; don't work around it.
@@ -39,6 +40,7 @@ You are operating **Compound Crowns**, a buy-and-hold dividend growth bot. It ho
 | `compute_crown_scores.py` | Crown-scores (`data/crown_scores.csv`), sector list (`SECTORS_TO_HOLD`), yield rule |
 | `run_monthly.py` | Monthly check, buy plan, sell rules, dividend check, report; Alpaca orders or Robinhood ticket |
 | `check_setup.py` | Setup checklist |
+| `court_picks.txt` | Court Picks: up to 10 extra companies the user chooses |
 | `docs/METHODOLOGY.md` | Full rules |
 | `docs/MONTHLY_CHECK.md` | Report contents and scheduling (cron, Task Scheduler, agents) |
 | `docs/AGENT_PROMPT.md` | Paste-in monthly prompt for agents that don't read this file |

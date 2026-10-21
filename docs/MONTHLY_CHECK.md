@@ -10,8 +10,10 @@ Each run writes `data/reports/run_<date>_dryrun.md` and prints the same report:
 2. **Dividend check:** dividends received since the last run (by stock, with the total) and dividends declared but not yet paid. There is no DRIP: dividends are pooled with cash and sent to the most underweight sector first.
 3. **Sector weights:** each sector's weight vs. its target, most underweight first.
 4. **Orders planned and skipped:** each buy or sell with quantity, limit price, value and reason, plus what was skipped and why.
-5. **Alerts:** sell-rule exits (dividend cut, dividend freeze, corporate event), overweight positions (flagged, never trimmed), dividend-reserve warnings and data flags.
-6. **Performance:** live-equivalent return vs. SPY and NOBL, including dividends.
+5. **Decisions needed:** holdings a sell rule flagged (dividend cut or suspension, freeze, corporate event). They get no new money until you choose `--approve-sell SYM` (sell and rotate) or `--keep SYM` (keep it Dethroned and appoint a Regent).
+6. **Dethroned holdings and Court Picks**, when you have any.
+7. **Alerts:** overweight positions (flagged, never trimmed), dividend-reserve warnings and data flags.
+8. **Performance:** live-equivalent return vs. SPY and NOBL, including dividends.
 
 ## Approving the orders
 

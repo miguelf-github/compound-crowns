@@ -71,6 +71,15 @@ DRIP_ENABLED = False
 # goes to the underweight ones instead. Set TRIM_OVERWEIGHTS = True to trim above POSITION_HARD_CAP.
 TRIM_OVERWEIGHTS = False
 ONE_EXECUTED_RUN_PER_MONTH = True  # override with --allow-second-run
+# Sell decisions are the user's: a dividend cut, suspension, freeze or corporate event never sells on its own.
+# The holding is paused (no new money) until the user chooses one of:
+#   --approve-sell SYM  sell it and rotate into the next-best company in the same sector
+#   --keep SYM          keep it as "Dethroned" (paused for good, no new money) and appoint a "Regent": the
+#                       next-best company in the same sector, which takes the slot and receives its new money
+# Court Picks: up to MAX_COURT_PICKS companies the user wants to own even though the methodology cuts them,
+# listed in court_picks.txt. They are extra slots on top of the 30, bought like the others, never sold by a rule.
+COURT_PICKS_FILE = ROOT / "court_picks.txt"
+MAX_COURT_PICKS = 10
 MAX_SPEND_PCT_PER_RUN = 0.40    # emergency stop: refuse --execute if buys exceed this share of equity
 CSCORES_MAX_AGE_DAYS = 45       # warn when the screen is older than this
 LIMIT_OFFSET = 0.001            # buy at ask + 0.10%, sell at bid - 0.10%
@@ -176,6 +185,18 @@ def load_robinhood_holdings():
             elif sym and qty > 0:
                 holdings[our_sym(sym)] = {"qty": qty, "cost_basis": qty * float(r.get("average_cost") or 0)}
     return cash, holdings
+
+
+def load_court_picks():
+    """Tickers from court_picks.txt (one per line, # comments allowed), deduplicated, in file order."""
+    if not COURT_PICKS_FILE.exists():
+        return []
+    picks = []
+    for line in COURT_PICKS_FILE.read_text(encoding="utf-8").splitlines():
+        sym = our_sym(line.split("#", 1)[0].strip().upper())
+        if sym and sym not in picks:
+            picks.append(sym)
+    return picks
 
 
 def write_ticket(planned, today, dry_run):
@@ -312,6 +333,10 @@ def main():
                          "the value overlay and the per-run spending cap (user-approved initial deployment)")
     ap.add_argument("--first-trading-day-only", action="store_true",
                     help="exit quietly unless today is the month's first trading day (for daily schedulers)")
+    ap.add_argument("--approve-sell", action="append", default=[], metavar="SYM",
+                    help="approve selling a holding flagged by a sell rule (repeatable)")
+    ap.add_argument("--keep", action="append", default=[], metavar="SYM",
+                    help="keep a flagged holding as Dethroned (paused) and appoint a Regent in its place (repeatable)")
     ap.add_argument("--allow-second-run", action="store_true",
                     help="allow a second executed run in the same calendar month")
     args = ap.parse_args()
@@ -386,17 +411,46 @@ def main():
         sold_log = []
     else:
         selected, sold_log = state["selected"], state.get("sold_log", [])
+    for s in selected:
+        s.setdefault("role", "core")
+    dethroned = list((state or {}).get("dethroned", []))
+    approve_sell = {our_sym(s.upper()) for s in args.approve_sell}
+    keep = {our_sym(s.upper()) for s in args.keep}
+
+    # Court Picks: extra user-chosen slots, kept separate from the scored 30.
+    pick_syms = load_court_picks()
+    if len(pick_syms) > MAX_COURT_PICKS:
+        alerts.append(f"court_picks.txt lists {len(pick_syms)} names; only the first {MAX_COURT_PICKS} are used.")
+        pick_syms = pick_syms[:MAX_COURT_PICKS]
+    prior_picks = {p["symbol"]: p for p in (state or {}).get("court_picks", [])}
+    core_syms = {s["symbol"] for s in selected}
+    court_picks = []
+    for sym in pick_syms:
+        if sym in core_syms:
+            notes.append(f"Court Pick {sym} is already one of the scored holdings; no extra slot used.")
+            continue
+        scored = score_by.get(sym)
+        court_picks.append(prior_picks.get(sym) or {
+            "symbol": sym, "sector": scored["sector"] if scored else "Court Picks",
+            "crown_score": scored["crown_score"] if scored else None, "role": "court_pick",
+            "selected_date": today.isoformat(), "first_buy_date": None})
+
     held_syms = {our_sym(s) for s in positions}
-    universe_syms = sorted({s["symbol"] for s in selected} | held_syms)
+    universe_syms = sorted({s["symbol"] for s in selected + court_picks} | held_syms)
 
     # --- market data ---
-    # Alpaca filters on payment date, so look 60 days ahead for dividends already ex but not yet paid.
-    ca = api.corporate_actions([alpaca_sym(s) for s in universe_syms + list(BENCHMARKS)],
-                               today - timedelta(days=6 * 365 + 60), today + timedelta(days=60))
-    events, splits = dividend_events(ca, today)
-    closes = {our_sym(k): v for k, v in api.monthly_closes([alpaca_sym(s) for s in universe_syms],
+    def market_data(syms):
+        """Dividend events, splits, monthly closes and quotes for syms (our ticker format)."""
+        # Alpaca filters on payment date, so look 60 days ahead for dividends already ex but not yet paid.
+        ca = api.corporate_actions([alpaca_sym(s) for s in syms],
+                                   today - timedelta(days=6 * 365 + 60), today + timedelta(days=60))
+        ev, sp = dividend_events(ca, today)
+        cl = {our_sym(k): v for k, v in api.monthly_closes([alpaca_sym(s) for s in syms],
                                                            today - timedelta(days=5 * 365 + 62)).items()}
-    quotes = {our_sym(k): v for k, v in api.quotes([alpaca_sym(s) for s in universe_syms + list(BENCHMARKS)]).items()}
+        qu = {our_sym(k): v for k, v in api.quotes([alpaca_sym(s) for s in syms]).items()}
+        return ev, sp, cl, qu
+
+    events, splits, closes, quotes = market_data(universe_syms + list(BENCHMARKS))
 
     if robinhood:
         # Real account: dividends arrive as real cash (keep DRIP off in Robinhood). The ledger here is only an
@@ -434,8 +488,10 @@ def main():
         spendable = max(0.0, cash - reserve_left - CASH_BUFFER * syn_equity)
 
     # --- Step 6: sell rules ---
-    sells = []
+    sells, decisions, paused, keeps = [], [], set(), []
     selected_syms = {s["symbol"] for s in selected}
+    pick_set = {p["symbol"] for p in court_picks}
+    dethroned_syms = {d["symbol"] for d in dethroned}
     for sym in sorted(held_syms):
         pos = positions[alpaca_sym(sym)]
         qty, mv = float(pos["qty"]), float(pos["market_value"])
@@ -445,17 +501,35 @@ def main():
         asset = api.asset(sym)
         reason = None
         if any(f.startswith("possible CUT") for f in flags):
-            reason = "cut-sell: " + "; ".join(flags)
+            reason = "dividend cut or suspension: " + "; ".join(flags)
         elif any(f.startswith("possible FREEZE") for f in flags):
-            reason = "freeze-sell: " + "; ".join(flags)
+            reason = "dividend freeze: " + "; ".join(flags)
         elif not asset.get("tradable") or asset.get("status") != "active":
             reason = f"corporate event: asset status {asset.get('status')}, tradable={asset.get('tradable')}"
+
+        if sym in dethroned_syms:  # already kept by the user; only an explicit approval sells it
+            if sym in approve_sell:
+                sells.append({"symbol": sym, "qty": qty, "value": mv, "full": True, "reason": "approved sale of Dethroned holding"})
+            continue
+        if sym in pick_set:  # Court Picks are the user's call: report, never act
+            if reason:
+                alerts.append(f"Court Pick {sym}: {reason} (no action; Court Picks are never sold by a rule)")
+            continue
+        if reason and sym in approve_sell:
+            sells.append({"symbol": sym, "qty": qty, "value": mv, "reason": f"approved sale: {reason}", "full": True})
+            alerts.append(f"SELL {sym} (approved): {reason}")
+        elif reason and sym in keep:
+            keeps.append((sym, reason))
+        elif reason:
+            decisions.append((sym, reason))
+            paused.add(sym)
         elif sym not in selected_syms:
             alerts.append(f"{sym} is held but not in the selection (left alone)")
+        if not reason and (sym in approve_sell or sym in keep):
+            alerts.append(f"--approve-sell/--keep {sym} ignored: no sell rule is flagged for it.")
         if reason:
-            sells.append({"symbol": sym, "qty": qty, "value": mv, "reason": reason, "full": True})
-            alerts.append(f"SELL {sym}: {reason}")
-        elif mv > POSITION_HARD_CAP * syn_equity and TRIM_OVERWEIGHTS:
+            continue
+        if mv > POSITION_HARD_CAP * syn_equity and TRIM_OVERWEIGHTS:
             trim_value = mv - TRIM_TO * syn_equity
             sells.append({"symbol": sym, "qty": None, "value": trim_value, "full": False,
                           "reason": f"trim: weight {mv / syn_equity:.1%} > cap {POSITION_HARD_CAP:.0%}"})
@@ -463,23 +537,56 @@ def main():
             alerts.append(f"{sym} is {mv / syn_equity:.1%} of equity, above the {POSITION_HARD_CAP:.0%} cap. "
                           f"Not trimmed (TRIM_OVERWEIGHTS is off); new money goes to other holdings.")
 
+    def taken():
+        return ({x["symbol"] for x in selected} | pick_set | {d["symbol"] for d in dethroned})
+
     for s in sells:
-        if s["full"] and s["symbol"] in selected_syms:
+        if s["full"] and s["symbol"] in {d["symbol"] for d in dethroned}:
+            sold_log.append({"symbol": s["symbol"], "date": today.isoformat(), "reason": s["reason"]})
+            dethroned = [d for d in dethroned if d["symbol"] != s["symbol"]]  # its Regent already holds the slot
+        elif s["full"] and s["symbol"] in selected_syms:
             sold_log.append({"symbol": s["symbol"], "date": today.isoformat(), "reason": s["reason"]})
             gone = next(x for x in selected if x["symbol"] == s["symbol"])
             selected.remove(gone)
-            rep = replacement(scores, gone["sector"], {x["symbol"] for x in selected}, {x["symbol"] for x in sold_log})
+            rep = replacement(scores, gone["sector"], taken(), {x["symbol"] for x in sold_log})
             if rep:
                 selected.append({"symbol": rep["symbol"], "sector": rep["sector"], "crown_score": rep["crown_score"],
-                                 "selected_date": today.isoformat(), "first_buy_date": None})
+                                 "role": "core", "selected_date": today.isoformat(), "first_buy_date": None})
                 notes.append(f"{rep['symbol']} replaces {gone['symbol']} ({rep['sector']})")
 
+    for sym, reason in keeps:  # Dethroned: keep the shares, pause them, appoint a Regent for the slot
+        gone = next((x for x in selected if x["symbol"] == sym), None)
+        if gone:
+            selected.remove(gone)
+        sector = gone["sector"] if gone else (score_by.get(sym) or {}).get("sector", "")
+        rep = replacement(scores, sector, taken() | {sym}, {x["symbol"] for x in sold_log})
+        dethroned.append({"symbol": sym, "date": today.isoformat(), "reason": reason,
+                          "regent": rep["symbol"] if rep else None})
+        if rep:
+            selected.append({"symbol": rep["symbol"], "sector": rep["sector"], "crown_score": rep["crown_score"],
+                             "role": "regent", "regent_for": sym, "selected_date": today.isoformat(),
+                             "first_buy_date": None})
+            notes.append(f"{sym} is Dethroned (kept, paused); {rep['symbol']} is its Regent ({rep['sector']})")
+        else:
+            notes.append(f"{sym} is Dethroned (kept, paused); no eligible Regent was found")
+
+    # Replacements and Regents chosen above need market data too.
+    new_syms = sorted({s["symbol"] for s in selected} - set(universe_syms))
+    if new_syms:
+        ev, sp, cl, qu = market_data(new_syms)
+        events.update(ev)
+        splits += sp
+        closes.update(cl)
+        quotes.update(qu)
+
     # --- Steps 4-5: buy engine ---
-    target_weight = (1 - CASH_BUFFER) / len(selected)
+    slots = selected + court_picks  # the scored 30 (with any Regents) plus up to 10 Court Picks
+    target_weight = (1 - CASH_BUFFER) / len(slots)
     tranche = target_weight * syn_equity / DCA_MONTHS
     candidates, holdings = [], []
-    for s in selected:
+    for s in slots:
         sym = s["symbol"]
+        is_pick = s.get("role") == "court_pick"
         pos = positions.get(alpaca_sym(sym))
         mv = float(pos["market_value"]) if pos else 0.0
         shares = float(pos["qty"]) if pos else 0.0
@@ -488,18 +595,23 @@ def main():
         q = quotes.get(sym, {})
         price = q.get("last") or q.get("ask") or 0
         y, cur_yield, avg_yield = yield_ratio(events.get(sym, []), closes.get(sym, []), price, today)
-        mult = overlay_multiplier(y) if VALUE_OVERLAY else 1.0
+        mult = overlay_multiplier(y) if VALUE_OVERLAY and not is_pick else 1.0
         waited = months_between(date.fromisoformat(s["selected_date"]), today)
-        why = "DCA tranche" if mult == 1.0 else ("overlay 2x" if mult == 2.0 else "overlay 0.5x")
+        why = ("Court Pick" if is_pick else "Regent" if s.get("role") == "regent" else "DCA tranche") if mult == 1.0             else ("overlay 2x" if mult == 2.0 else "overlay 0.5x")
         if shares == 0 and waited >= VALUE_TIME_STOP_MONTHS and (mult is None or mult < 1):
             mult, why = 1.0, "time stop"
         regular = [(e["ex_date"], e["rate_today_shares"]) for e in events.get(sym, [])
                    if not e["special"] and e["ex_date"] <= today]
         last_inc, dflags = dividend_flags(regular, today)
+        role = {"court_pick": "Court Pick", "regent": f"Regent for {s.get('regent_for')}"}.get(s.get("role"), "")
+        status = "PAUSED: sell decision needed" if sym in paused else ("; ".join(dflags) or f"ok (last raise {last_inc})")
         holdings.append({"symbol": sym, "sector": s["sector"], "crown_score": s["crown_score"], "y": y, "shares": shares,
                          "mv": mv, "weight": mv / syn_equity if syn_equity else 0, "target": target, "gap": gap,
-                         "streak": "; ".join(dflags) or f"ok (last raise {last_inc})"})
+                         "streak": f"{role}: {status}" if role else status})
         if gap <= 0:
+            continue
+        if sym in paused:
+            skipped.append((sym, "paused: a sell rule flagged it; waiting for your decision"))
             continue
         if args.deploy_all:
             mult, why = 1.0, "deploy-all: full target"
@@ -513,7 +625,7 @@ def main():
         if any(o["symbol"] == alpaca_sym(sym) and o["side"] == "buy" for o in open_orders):
             skipped.append((sym, "open buy order already working"))
             continue
-        candidates.append({"symbol": sym, "crown_score": s["crown_score"], "gap_pct": gap / target,
+        candidates.append({"symbol": sym, "crown_score": s["crown_score"] or 0, "gap_pct": gap / target,
                            "value": gap if args.deploy_all else min(gap, tranche * mult), "reason": why, "quote": q})
 
     # Cash (including dividends) goes to the most underweight sector first, then the most underweight stock in it.
@@ -581,7 +693,7 @@ def main():
             p["result"] = "on ticket"
             placed.append(p)
             if p["side"] == "buy":
-                s = next(x for x in selected if x["symbol"] == p["symbol"])
+                s = next(x for x in slots if x["symbol"] == p["symbol"])
                 s["first_buy_date"] = s["first_buy_date"] or today.isoformat()
     elif args.execute:
         if not market_open:
@@ -605,7 +717,7 @@ def main():
             p["result"] = res.get("error") or res.get("status")
             placed.append(p)
             if p["side"] == "buy" and not res.get("error"):
-                s = next(x for x in selected if x["symbol"] == p["symbol"])
+                s = next(x for x in slots if x["symbol"] == p["symbol"])
                 s["first_buy_date"] = s["first_buy_date"] or today.isoformat()
 
     # --- performance ---
@@ -689,7 +801,7 @@ def main():
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for h in sorted(holdings, key=lambda h: -h["gap"]):
-        lines.append(f"| {h['symbol']} | {h['sector']} | {h['crown_score']} | {ratio(h['y'])} | "
+        lines.append(f"| {h['symbol']} | {h['sector']} | {'-' if h['crown_score'] is None else h['crown_score']} | {ratio(h['y'])} | "
                      f"{h['shares']:g} | ${h['mv']:,.0f} | {h['weight']:.1%} | ${h['target']:,.0f} | ${h['gap']:,.0f} | {h['streak']} |")
     heading = (f"ORDERS ON THE ROBINHOOD TICKET ({ticket.relative_to(ROOT)}): place these yourself or via your agent"
                if robinhood else f"ORDERS {'PLACED' if args.execute else 'PLANNED'}")
@@ -699,6 +811,22 @@ def main():
         lines.append(f"| {p['symbol']} | {p['side']} | {p['qty']:g} | limit day | ${p['limit']:.2f} | ${p['value']:,.2f} | "
                      f"{p['reason']} | {p.get('result', '-')} |")
     lines += ["", "ORDERS SKIPPED:"] + ([f"- {s}: {r}" for s, r in skipped] or ["- none"])
+    lines += ["", "DECISIONS NEEDED (a sell rule flagged these; they get no new money until you decide):"]
+    for sym, reason in decisions:
+        lines += [f"- {sym}: {reason}",
+                  f"  sell and rotate: uv run run_monthly.py --execute --approve-sell {sym}",
+                  f"  keep it paused and appoint a Regent: uv run run_monthly.py --execute --keep {sym}"]
+    if not decisions:
+        lines.append("- none")
+    if dethroned:
+        lines += ["", "DETHRONED (kept by your choice, paused, no new money):",
+                  "| symbol | since | reason | Regent | mkt value |", "|---|---|---|---|---|"]
+        for d in dethroned:
+            mv = float((positions.get(alpaca_sym(d["symbol"])) or {}).get("market_value") or 0)
+            lines.append(f"| {d['symbol']} | {d['date']} | {d['reason'][:60]} | {d.get('regent') or '-'} | ${mv:,.0f} |")
+    if court_picks:
+        lines += ["", f"COURT PICKS ({len(court_picks)} of {MAX_COURT_PICKS} extra slots, from court_picks.txt): "
+                  + ", ".join(p["symbol"] for p in court_picks)]
     lines += ["", "ALERTS (sell rules, overweights, reserve):"] + ([f"- {a}" for a in alerts] or ["- none"])
     lines += ["", "DATA FLAGS:"] + ([f"- {d}" for d in data_flags] or ["- none"])
     if notes:
@@ -743,6 +871,8 @@ def main():
                               date.fromisoformat(s["selected_date"]), today)} for s in selected],
             "bench_start": bench_start,
             "sold_log": sold_log,
+            "dethroned": dethroned,
+            "court_picks": court_picks,
             "dividend_reserve": reserve,
             "dividend_ledger": ledger,
         }

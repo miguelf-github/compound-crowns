@@ -108,7 +108,9 @@ If `VALUE_OVERLAY=OFF`, buy exactly 1 tranche per run.
 7. Never sell to rebalance overweights; sales are taxable events. A position above `POSITION_HARD_CAP` is flagged in the report, not trimmed (`TRIM_OVERWEIGHTS = False` by default). New money goes to underweight holdings instead.
 8. This is a monthly buy-and-hold bot: at most one executed run per calendar month.
 
-## STEP 6 — SELL RULES (the only reasons to sell)
+## STEP 6 — SELL RULES (the only reasons to sell, and only with the user's approval)
+
+A sell rule never places a sale by itself. A flagged holding is paused (no new money) and listed under "Decisions needed" until the user chooses: **sell and rotate** (`--approve-sell SYM`), or **keep** (`--keep SYM`), which makes it **Dethroned** (kept, paused for good) and appoints a **Regent** (the highest-ranked unheld company in the same sector) to take its slot and receive its new money. Court Picks (up to 10 user-chosen extra slots in `court_picks.txt`) are never sold by a rule.
 Check every holding every run:
 1. **Dividend cut or suspension:** the declared regular dividend is lower than the previous one (use `get_corporate_actions` and company announcements; ignore special dividends) → **sell 100%** this run.
 2. **Dividend freeze:** no increase in the regular dividend for 15+ months (streak broken) → **sell 100%** this run.
