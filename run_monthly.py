@@ -2,13 +2,20 @@
 # requires-python = ">=3.10"
 # dependencies = ["requests", "python-dotenv", "tzdata", "defusedxml"]
 # ///
-"""Compound Crowns monthly run: Steps 3-8 of the methodology on the Alpaca PAPER account.
+"""Compound Crowns monthly run: Steps 3-8 of the methodology.
+
+Two brokers (BROKER in .env, or --broker):
+  alpaca     Alpaca PAPER account. --execute places the orders through Alpaca's API.
+  robinhood  Ticket mode. Reads holdings from data/robinhood_holdings.csv and writes an order ticket to
+             data/orders/. Nothing is ever placed by this script: you, or an agent you connect to Robinhood
+             and approve, place the ticket. --execute records the month's run in the state file.
+Both use Alpaca's free market data for prices and dividend history.
 
   uv run run_monthly.py            # dry run: builds the plan and report, places nothing
-  uv run run_monthly.py --execute  # places the planned orders (market must be open)
+  uv run run_monthly.py --execute  # alpaca: places the planned orders; robinhood: records the run
 
-Inputs:  data/crown_scores.csv (from compute_crown_scores.py) and data/crown_score_state.json (created on the first --execute).
-Outputs: data/reports/run_<date>.md, and on --execute an updated data/crown_score_state.json.
+Inputs:  data/crown_scores.csv (from compute_crown_scores.py) and the broker's state file (created on the first --execute).
+Outputs: data/reports/run_<date>.md, data/orders/ (robinhood), and on --execute an updated state file.
 
 Dividend ledger: Alpaca paper accounts never pay dividends, so each run rebuilds a ledger from Alpaca's
 dividend history and the account's own fills (shares held before each ex-date x dividend per share).
@@ -34,7 +41,11 @@ from compute_crown_scores import MAX_PER_SECTOR, SECTORS_TO_HOLD, TARGET_POSITIO
 ROOT = Path(__file__).parent
 CSCORES = ROOT / "data" / "crown_scores.csv"
 STATE = ROOT / "data" / "crown_score_state.json"
+STATE_ROBINHOOD = ROOT / "data" / "crown_score_state_robinhood.json"
+ROBINHOOD_HOLDINGS = ROOT / "data" / "robinhood_holdings.csv"
+TICKETS = ROOT / "data" / "orders"
 REPORTS = ROOT / "data" / "reports"
+BROKERS = ("alpaca", "robinhood")
 
 TRADING = "https://paper-api.alpaca.markets/v2"
 DATA = "https://data.alpaca.markets"
@@ -144,6 +155,39 @@ class Alpaca:
 
     def portfolio_history(self):
         return self.get(f"{TRADING}/account/portfolio/history", period="1A", timeframe="1D")
+
+
+def load_robinhood_holdings():
+    """(cash, {symbol: {"qty", "cost_basis"}}) from data/robinhood_holdings.csv.
+
+    Columns: symbol, quantity, average_cost. One row with symbol CASH holds the cash to invest
+    (quantity = dollars). See examples/robinhood_holdings.example.csv.
+    """
+    if not ROBINHOOD_HOLDINGS.exists():
+        sys.exit(f"Robinhood mode needs {ROBINHOOD_HOLDINGS.relative_to(ROOT)}: copy "
+                 f"examples/robinhood_holdings.example.csv there and fill in your holdings and cash.")
+    cash, holdings = 0.0, {}
+    with ROBINHOOD_HOLDINGS.open(encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            sym = (r.get("symbol") or "").strip().upper()
+            qty = float(r.get("quantity") or 0)
+            if sym == "CASH":
+                cash = qty
+            elif sym and qty > 0:
+                holdings[our_sym(sym)] = {"qty": qty, "cost_basis": qty * float(r.get("average_cost") or 0)}
+    return cash, holdings
+
+
+def write_ticket(planned, today, dry_run):
+    """Order ticket for Robinhood: dollar amounts for fractional buys, plus share quantity and a limit price."""
+    TICKETS.mkdir(parents=True, exist_ok=True)
+    path = TICKETS / f"robinhood_ticket_{today.isoformat()}{'_dryrun' if dry_run else ''}.csv"
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["side", "symbol", "dollars", "quantity", "limit_price", "reason"])
+        for p in planned:
+            w.writerow([p["side"], p["symbol"], f"{p['value']:.2f}", p["qty"], f"{p['limit']:.2f}", p["reason"]])
+    return path
 
 
 def alpaca_sym(s):  return s.replace("-", ".")
@@ -260,7 +304,9 @@ def months_between(a, b):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--execute", action="store_true", help="place orders (default is a dry run)")
+    ap.add_argument("--execute", action="store_true",
+                    help="alpaca: place orders; robinhood: record this month's run (default is a dry run)")
+    ap.add_argument("--broker", choices=BROKERS, help="override BROKER from .env (default alpaca)")
     ap.add_argument("--deploy-all", action="store_true",
                     help="one-time: buy every selected stock up to its full target now, skipping the DCA spread, "
                          "the value overlay and the per-run spending cap (user-approved initial deployment)")
@@ -288,17 +334,29 @@ def main():
             print(f"Not the first trading day of the month (that's {first}); nothing to do.")
             return
 
+    broker = (args.broker or os.getenv("BROKER", "") or "alpaca").strip().lower()
+    if broker not in BROKERS:
+        sys.exit(f"BROKER must be one of {', '.join(BROKERS)} (got {broker!r}).")
+    robinhood = broker == "robinhood"
+    state_path = STATE_ROBINHOOD if robinhood else STATE
+
     # --- hard safety rules 1 and 4 ---
-    acct = api.account()
-    is_paper = str(acct.get("account_number", "")).startswith("PA")
-    if not is_paper:
-        sys.exit(f"STOP: account {acct.get('account_number')} is not a paper account. No orders placed.")
     clock = api.clock()
     market_open = bool(clock.get("is_open"))
-    cash, equity = float(acct["cash"]), float(acct["equity"])
+    if robinhood:  # real-money account: this script only plans, never places orders
+        cash, rh_holdings = load_robinhood_holdings()
+        acct = {"account_number": "Robinhood (ticket mode, real money)", "buying_power": cash}
+        is_paper = False
+        equity = None  # set once holdings are priced
+    else:
+        acct = api.account()
+        is_paper = str(acct.get("account_number", "")).startswith("PA")
+        if not is_paper:
+            sys.exit(f"STOP: account {acct.get('account_number')} is not a paper account. No orders placed.")
+        cash, equity = float(acct["cash"]), float(acct["equity"])
 
     # --- inputs ---
-    state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else None
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
     first_run = state is None
     scores = load_scores()
     score_by = {r["symbol"]: r for r in scores}
@@ -308,12 +366,17 @@ def main():
     if today.month == 1 and state and not state.get("last_full_screen", "").startswith(str(today.year)):
         notes.append("January: full re-screen due (build_universe.py, compute_crown_scores.py) before this run")
 
-    positions = api.positions()
-    orders = api.orders()
-    fills = [{"symbol": our_sym(o["symbol"]), "date": date.fromisoformat(o["filled_at"][:10]),
-              "qty": float(o["filled_qty"]) * (1 if o["side"] == "buy" else -1)}
-             for o in orders if o.get("filled_at") and float(o.get("filled_qty") or 0) > 0]
-    open_orders = [o for o in orders if o["status"] in ("new", "accepted", "partially_filled", "pending_new")]
+    if robinhood:
+        positions = {alpaca_sym(s): {"qty": h["qty"], "cost_basis": h["cost_basis"], "market_value": 0.0}
+                     for s, h in rh_holdings.items()}
+        orders, fills, open_orders = [], [], []
+    else:
+        positions = api.positions()
+        orders = api.orders()
+        fills = [{"symbol": our_sym(o["symbol"]), "date": date.fromisoformat(o["filled_at"][:10]),
+                  "qty": float(o["filled_qty"]) * (1 if o["side"] == "buy" else -1)}
+                 for o in orders if o.get("filled_at") and float(o.get("filled_qty") or 0) > 0]
+        open_orders = [o for o in orders if o["status"] in ("new", "accepted", "partially_filled", "pending_new")]
 
     # --- selection ---
     if first_run:
@@ -335,17 +398,40 @@ def main():
                                                            today - timedelta(days=5 * 365 + 62)).items()}
     quotes = {our_sym(k): v for k, v in api.quotes([alpaca_sym(s) for s in universe_syms + list(BENCHMARKS)]).items()}
 
-    # --- dividend ledger and synthetic (live-equivalent) equity ---
-    ledger = build_ledger({s: events.get(s, []) for s in held_syms | {f["symbol"] for f in fills}}, fills, splits, today)
-    credited = sum(x["amount"] for x in ledger if x["status"] == "credited")
-    pending = sum(x["amount"] for x in ledger if x["status"] == "pending")
-    reserve = state.get("dividend_reserve", DIVIDEND_RESERVE) if state else DIVIDEND_RESERVE
-    reserve_left = max(0.0, reserve - credited)
-    if credited > reserve:
-        alerts.append(f"Dividend reserve exhausted: ${credited - reserve:,.2f} of credited dividends can't be "
-                      f"reinvested from paper cash. Raise DIVIDEND_RESERVE or reset the account.")
-    syn_equity = equity - reserve + credited
-    spendable = max(0.0, cash - reserve_left - CASH_BUFFER * syn_equity)
+    if robinhood:
+        # Real account: dividends arrive as real cash (keep DRIP off in Robinhood). The ledger here is only an
+        # estimate for the report: current shares x each dividend paid since the last run.
+        for s, h in rh_holdings.items():
+            positions[alpaca_sym(s)]["market_value"] = h["qty"] * (quotes.get(s, {}).get("last") or 0)
+        equity = cash + sum(p["market_value"] for p in positions.values())
+        since = date.fromisoformat(state["last_run"]) if state and state.get("last_run") else today - timedelta(days=31)
+        ledger = []
+        for s, h in rh_holdings.items():
+            for e in events.get(s, []):
+                if e["ex_date"] <= today and e["pay_date"] > since:
+                    ledger.append({"symbol": s, "ex_date": e["ex_date"].isoformat(), "pay_date": e["pay_date"].isoformat(),
+                                   "rate": e["rate"], "shares": h["qty"], "amount": round(h["qty"] * e["rate"], 2),
+                                   "special": e["special"], "status": "credited" if e["pay_date"] <= today else "pending"})
+        ledger.sort(key=lambda x: (x["pay_date"], x["symbol"]))
+        notes.append("Robinhood: dividend amounts are estimated from your current shares; check them against "
+                     "Robinhood's history. Keep dividend reinvestment (DRIP) off in the Robinhood app.")
+        credited = sum(x["amount"] for x in ledger if x["status"] == "credited")
+        pending = sum(x["amount"] for x in ledger if x["status"] == "pending")
+        reserve = reserve_left = 0.0
+        syn_equity = equity
+        spendable = max(0.0, cash - CASH_BUFFER * syn_equity)
+    else:
+        # --- dividend ledger and synthetic (live-equivalent) equity ---
+        ledger = build_ledger({s: events.get(s, []) for s in held_syms | {f["symbol"] for f in fills}}, fills, splits, today)
+        credited = sum(x["amount"] for x in ledger if x["status"] == "credited")
+        pending = sum(x["amount"] for x in ledger if x["status"] == "pending")
+        reserve = state.get("dividend_reserve", DIVIDEND_RESERVE) if state else DIVIDEND_RESERVE
+        reserve_left = max(0.0, reserve - credited)
+        if credited > reserve:
+            alerts.append(f"Dividend reserve exhausted: ${credited - reserve:,.2f} of credited dividends can't be "
+                          f"reinvested from paper cash. Raise DIVIDEND_RESERVE or reset the account.")
+        syn_equity = equity - reserve + credited
+        spendable = max(0.0, cash - reserve_left - CASH_BUFFER * syn_equity)
 
     # --- Step 6: sell rules ---
     sells = []
@@ -483,7 +569,21 @@ def main():
 
     # --- execute ---
     placed = []
-    if args.execute:
+    ticket = write_ticket(planned, today, dry_run=not args.execute) if robinhood else None
+    if args.execute and robinhood:  # record the month's run; the ticket is placed by you or your agent
+        if (ONE_EXECUTED_RUN_PER_MONTH and state and state.get("last_run", "")[:7] == today.isoformat()[:7]
+                and not args.allow_second_run):
+            sys.exit(f"Already recorded a run this month ({state['last_run']}). This bot runs monthly; "
+                     f"use --allow-second-run only if that run failed.")
+        if buy_total > MAX_SPEND_PCT_PER_RUN * syn_equity and not args.deploy_all:
+            sys.exit(f"Emergency stop: buys ${buy_total:,.0f} exceed {MAX_SPEND_PCT_PER_RUN:.0%} of equity.")
+        for p in planned:
+            p["result"] = "on ticket"
+            placed.append(p)
+            if p["side"] == "buy":
+                s = next(x for x in selected if x["symbol"] == p["symbol"])
+                s["first_buy_date"] = s["first_buy_date"] or today.isoformat()
+    elif args.execute:
         if not market_open:
             sys.exit(f"Market is closed (next open {clock.get('next_open')}). Run without --execute for the plan.")
         if (ONE_EXECUTED_RUN_PER_MONTH and state and state.get("last_run", "")[:7] == today.isoformat()[:7]
@@ -524,7 +624,7 @@ def main():
         return (bench_now[b] + divs) / start - 1
 
     port_return = syn_equity / bench_start["equity"] - 1
-    hist = api.portfolio_history()
+    hist = {} if robinhood else api.portfolio_history()  # Robinhood: deposits make equity history misleading
     max_dd, peak = 0.0, None
     credited_by_day = {}
     for x in ledger:
@@ -555,10 +655,14 @@ def main():
     lines = [
         f"RUN DATE / TIME (ET): {datetime.now(ZoneInfo('America/New_York')):%Y-%m-%d %H:%M}"
         f"  ({'EXECUTE' if args.execute else 'DRY RUN - nothing placed'})",
-        f"ACCOUNT CHECK: paper {'✅' if is_paper else '❌'} ({acct['account_number']}) | cash ${cash:,.2f} | "
-        f"equity ${equity:,.2f} | buying power ${float(acct['buying_power']):,.2f}",
-        f"DIVIDEND LEDGER: reserve ${reserve:,.2f} | credited ${credited:,.2f} | pending ${pending:,.2f} | "
-        f"reserve left ${reserve_left:,.2f} | live-equivalent equity ${syn_equity:,.2f} | spendable ${spendable:,.2f}",
+        (f"ACCOUNT CHECK: {acct['account_number']}: this script only writes a ticket, nothing is placed | "
+         f"cash ${cash:,.2f} | holdings + cash ${equity:,.2f} | spendable ${spendable:,.2f}" if robinhood else
+         f"ACCOUNT CHECK: paper {'✅' if is_paper else '❌'} ({acct['account_number']}) | cash ${cash:,.2f} | "
+         f"equity ${equity:,.2f} | buying power ${float(acct['buying_power']):,.2f}"),
+        (f"DIVIDENDS (estimated from current shares): since last run ${credited:,.2f} | declared, not yet paid "
+         f"${pending:,.2f}" if robinhood else
+         f"DIVIDEND LEDGER: reserve ${reserve:,.2f} | credited ${credited:,.2f} | pending ${pending:,.2f} | "
+         f"reserve left ${reserve_left:,.2f} | live-equivalent equity ${syn_equity:,.2f} | spendable ${spendable:,.2f}"),
         f"MARKET STATUS: {'open' if market_open else 'closed'} (next open {clock.get('next_open', '')[:16]})",
         f"SCREEN USED: {scores[0]['as_of']} crown_scores.csv ({len(scores)} scored) | "
         f"{'first run: selection built now' if first_run else 'selection from state'} | re-screened this run? N",
@@ -587,7 +691,9 @@ def main():
     for h in sorted(holdings, key=lambda h: -h["gap"]):
         lines.append(f"| {h['symbol']} | {h['sector']} | {h['crown_score']} | {ratio(h['y'])} | "
                      f"{h['shares']:g} | ${h['mv']:,.0f} | {h['weight']:.1%} | ${h['target']:,.0f} | ${h['gap']:,.0f} | {h['streak']} |")
-    lines += ["", f"ORDERS {'PLACED' if args.execute else 'PLANNED'} ({len(planned)}, buys ${buy_total:,.2f}):",
+    heading = (f"ORDERS ON THE ROBINHOOD TICKET ({ticket.relative_to(ROOT)}): place these yourself or via your agent"
+               if robinhood else f"ORDERS {'PLACED' if args.execute else 'PLANNED'}")
+    lines += ["", f"{heading} ({len(planned)}, buys ${buy_total:,.2f}):",
               "| symbol | side | qty | type | limit | value | reason | result |", "|---|---|---|---|---|---|---|---|"]
     for p in placed or planned:
         lines.append(f"| {p['symbol']} | {p['side']} | {p['qty']:g} | limit day | ${p['limit']:.2f} | ${p['value']:,.2f} | "
@@ -597,11 +703,18 @@ def main():
     lines += ["", "DATA FLAGS:"] + ([f"- {d}" for d in data_flags] or ["- none"])
     if notes:
         lines += ["", "NOTES:"] + [f"- {n}" for n in notes]
-    lines += ["", "PERFORMANCE (since inception, live-equivalent incl. credited dividends):",
-              f"portfolio {pct(port_return)} | SPY {pct(bench_return('SPY'))} | NOBL {pct(bench_return('NOBL'))} | "
-              f"max drawdown {max_dd:.2%} | dividends received TTM ${divs_ttm:,.2f} | "
-              f"forward annual dividend income ${fwd_income:,.2f} | yield on cost "
-              f"{(fwd_income / cost_basis if cost_basis else 0):.2%}",
+    if robinhood:  # regular deposits (DCA) make an equity-based return misleading; compare to cost instead
+        lines += ["", "PERFORMANCE:",
+                  f"holdings ${invested:,.2f} vs cost ${cost_basis:,.2f} ({pct(invested / cost_basis - 1 if cost_basis else None)}) | "
+                  f"forward annual dividend income ${fwd_income:,.2f} | yield on cost "
+                  f"{(fwd_income / cost_basis if cost_basis else 0):.2%}"]
+    else:
+        lines += ["", "PERFORMANCE (since inception, live-equivalent incl. credited dividends):",
+                  f"portfolio {pct(port_return)} | SPY {pct(bench_return('SPY'))} | NOBL {pct(bench_return('NOBL'))} | "
+                  f"max drawdown {max_dd:.2%} | dividends received TTM ${divs_ttm:,.2f} | "
+                  f"forward annual dividend income ${fwd_income:,.2f} | yield on cost "
+                  f"{(fwd_income / cost_basis if cost_basis else 0):.2%}"]
+    lines += [
               f"DEPLOYMENT: {invested / syn_equity:.1%} invested | {1 - invested / syn_equity:.1%} cash",
               "", "DIVIDEND LEDGER (last 12 entries):",
               "| symbol | ex-date | pay date | rate | shares | amount | status |", "|---|---|---|---|---|---|---|"]
@@ -612,10 +725,12 @@ def main():
         lines.append("| - | - | - | - | - | - | no dividends earned yet |")
     report = "\n".join(lines)
     REPORTS.mkdir(parents=True, exist_ok=True)
-    path = REPORTS / f"run_{today.isoformat()}{'' if args.execute else '_dryrun'}.md"
+    path = REPORTS / f"run_{today.isoformat()}{'_robinhood' if robinhood else ''}{'' if args.execute else '_dryrun'}.md"
     path.write_text(report, encoding="utf-8")
     print(report)
     print(f"\nReport saved to {path.relative_to(ROOT)}")
+    if ticket:
+        print(f"Robinhood order ticket saved to {ticket.relative_to(ROOT)}")
 
     # --- state (Step 8): only an executed run changes it ---
     if args.execute:
@@ -631,8 +746,8 @@ def main():
             "dividend_reserve": reserve,
             "dividend_ledger": ledger,
         }
-        STATE.write_text(json.dumps(new_state, indent=2), encoding="utf-8")
-        print(f"State saved to {STATE.relative_to(ROOT)}")
+        state_path.write_text(json.dumps(new_state, indent=2), encoding="utf-8")
+        print(f"State saved to {state_path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

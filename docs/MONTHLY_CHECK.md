@@ -50,9 +50,9 @@ Task Scheduler uses local time, so convert 10:33 ET to your time zone (07:33 on 
 schtasks /Create /TN "Compound Crowns monthly check" /SC MONTHLY /D 1,2,3,4,5,6,7 /ST 07:33 /TR "cmd /c cd /d C:\path\to\compound-crowns && uv run run_monthly.py --first-trading-day-only >> data\reports\scheduler.log 2>&1"
 ```
 
-### Claude (scheduled task)
+### AI agents (Claude, Grok, Muse, Dots and others)
 
-If you run the bot with Claude (the Claude desktop app's scheduled tasks or Claude Code), create a task for 10:33 ET on days 1–7 of each month with this prompt, replacing the path:
+Create a scheduled task in your agent for 10:33 ET on days 1–7 of each month using the prompt in [AGENT_PROMPT.md](AGENT_PROMPT.md). It covers both brokers. A shorter Alpaca-only version:
 
 > You run the monthly check for Compound Crowns, a buy-and-hold dividend growth bot on an Alpaca paper account, in `<path to compound-crowns>`.
 > 1. Run `uv run run_monthly.py --first-trading-day-only`. If it says it isn't the first trading day, stop.

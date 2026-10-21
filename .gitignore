@@ -14,3 +14,4 @@ data/cache/
 data/reports/
 data/crown_score_state.json
 data/*.csv
+data/orders/

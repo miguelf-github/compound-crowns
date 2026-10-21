@@ -1,10 +1,31 @@
 # Compound Crowns
 
-**A dividend growth trading bot strategy.** Compound Crowns holds about 30 large U.S. companies that have raised their dividend for 25+ years in a row, scores them on dividend quality, and runs a rules-based monthly process on an **Alpaca paper trading account**: buy the best-scoring names across sectors, reinvest dividends into the most underweight holdings, and sell only when a company cuts or freezes its dividend.
+**A dividend growth trading bot strategy.** Compound Crowns owns about 30 large companies that have raised their dividend for 25+ years in a row, chosen by a dividend-quality score and spread across sectors. Once a month it invests new cash and dividends into the most underweight sectors, and it sells only when a company cuts or freezes its dividend.
+
+What it's built for:
+
+- **Dollar-cost averaging you can forget about:** one run a month, new money and dividends go where the portfolio is lightest.
+- **No expense ratio:** you own the stocks directly instead of a dividend fund.
+- **Rising income:** companies with long records of growing their dividends, with no DRIP so income is steered deliberately.
+- **Few taxable events:** buy-and-hold; no rebalancing sales, no trimming, sells only on dividend cuts, freezes or corporate events.
 
 It aims for steadily rising income, not market-beating returns. Expect it to lag the S&P 500 in tech-led rallies and hold up better in drawdowns.
 
-> Paper trading only. This is a personal research project, not investment advice.
+## Two ways to use it
+
+| | Alpaca paper trading | Robinhood |
+|---|---|---|
+| Money | Simulated ($100k paper account) | Real |
+| Who places orders | The bot, through Alpaca's API | You, or an AI agent you connect to Robinhood and approve |
+| What the bot produces | Orders placed + monthly report | Monthly report + an order ticket (`data/orders/robinhood_ticket_<date>.csv`) |
+| Dividends | Simulated by the bot's dividend ledger (Alpaca paper pays none) | Real; keep DRIP **off** in the Robinhood app |
+| Set in `.env` | `BROKER=alpaca` | `BROKER=robinhood` |
+
+Robinhood has no official stock-trading API for scripts, so in Robinhood mode the bot plans and writes the ticket, and the orders are placed through the Robinhood app or Robinhood's Agentic Trading connection for AI agents. Both modes use Alpaca's free market data, so a free Alpaca paper account is needed either way.
+
+## Use it with any AI agent
+
+[AGENTS.md](AGENTS.md) is the operating guide for agents: setup, the monthly routine, and the rules they must follow (never trade outside the plan, no rebalancing sales, no DRIP, keys stay in `.env`). Claude reads it through `CLAUDE.md`; for agents that don't read repo files (Grok, Muse, Dots or others), paste [docs/AGENT_PROMPT.md](docs/AGENT_PROMPT.md) into a monthly scheduled task.
 
 ## How it works
 
@@ -12,7 +33,7 @@ It aims for steadily rising income, not market-beating returns. Expect it to lag
 |---|---|---|
 | 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Any company trading on a US exchange is eligible, wherever it's based. Drops REITs, MLPs, OTC stocks and everything below the median market cap. |
 | 2. Score | `compute_crown_scores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
-| 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, places limit orders, tracks dividends, and writes a run report. |
+| 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, checks dividends, and writes a run report. Alpaca: places limit orders. Robinhood: writes the order ticket. |
 
 The full rule set is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
@@ -39,9 +60,9 @@ This is a buy-and-hold bot, not a trader. It runs once a month and refuses a sec
 - **Buying:** each stock targets an equal weight (99% of equity ÷ 30). Normal runs buy one sixth of the target per month, scaled by a value check: yield vs. the stock's own 5-year average yield (cheap = 2×, fair = 1×, slightly rich = ½×, expensive = skip; a 6-month time stop buys anyway).
 - **Dividends (no DRIP):** dividends are never reinvested automatically into the stock that paid them, and any broker DRIP should stay off. Each run checks for dividends received since the last run, reports them, and pools them with cash. The buy engine then sends that cash to the most underweight sector first, and within it to the most underweight stock.
 - **Selling, kept to a minimum:** every sale is a taxable event, so the bot only sells on a dividend cut, a dividend freeze (no raise in 15+ months), or a corporate event. Positions that grow overweight are not trimmed; the report flags them and new money goes elsewhere. The January re-screen never sells a holding just because it dropped out of the top 30.
-- **Safety:** refuses to trade unless the account is paper and the market is open; never sends duplicate orders; dry run by default.
+- **Safety:** dry run by default. Alpaca: refuses to trade unless the account is paper and the market is open; never sends duplicate orders. Robinhood: never places orders; it writes a ticket for you or your approved agent.
 
-### Dividend ledger
+### Dividend ledger (Alpaca paper)
 
 Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpaca's dividend history and the account's own fills (shares held before each ex-date × dividend per share). A $5,000 cash reserve is released as dividends are credited, so reinvested dividend money really exists in the account. Performance is reported as live-equivalent equity, and the SPY and NOBL benchmarks include their dividends.
 
@@ -58,31 +79,38 @@ Selection takes the best-scoring company in each sector that has an eligible Cha
 - **Dividend Champions list:** the U.S. Dividend Champions spreadsheet published by [Dividend Growth Investor](https://www.dividendgrowthinvestor.com/). Download it yourself into `data/raw/` (it isn't redistributed here).
 - **Company profiles:** [Financial Modeling Prep](https://financialmodelingprep.com/) (free plan is enough for profiles).
 - **Payout ratio:** SEC EDGAR XBRL company facts (free; needs a contact in `SEC_USER_AGENT`).
-- **Dividends, prices, trading:** [Alpaca](https://alpaca.markets/) paper trading API.
+- **Dividends and prices:** [Alpaca](https://alpaca.markets/) free market data (both modes).
+- **Trading:** Alpaca paper trading API, or a Robinhood order ticket you place yourself.
 
 ## Setup
 
 1. Install [uv](https://docs.astral.sh/uv/). Each script declares its own dependencies, so there's nothing else to install.
-2. Copy `.env.example` to `.env` and fill in your FMP key, SEC contact, and Alpaca **paper** keys.
-3. Download the current Dividend Champions spreadsheet into `data/raw/` and update `CHAMPIONS_FILE` / `CHAMPIONS_SHEET` in `build_universe.py` if the file name or sheet name changed.
+2. Copy `.env.example` to `.env`. Set `BROKER`, and fill in a free FMP key, an SEC contact, and free Alpaca **paper** keys.
+3. Download the current U.S. Dividend Champions spreadsheet into `data/raw/`, and update `CHAMPIONS_FILE` / `CHAMPIONS_SHEET` in `build_universe.py` if the file or sheet name changed.
+4. Robinhood only: copy `examples/robinhood_holdings.example.csv` to `data/robinhood_holdings.csv` and list your holdings plus a `CASH` row with the amount to invest. Update it before each monthly run (an agent connected to Robinhood can do this for you). Turn dividend reinvestment off in the Robinhood app.
+5. Check everything:
+
+```bash
+uv run check_setup.py
+```
 
 ## Usage
 
 ```bash
 uv run build_universe.py                           # step 1: data/universe.csv (+ excluded list with reasons)
 uv run compute_crown_scores.py                     # step 2: data/crown_scores.csv and a 30-stock selection preview
-uv run run_monthly.py                              # monthly check (dry run): report in data/reports/, places nothing
-uv run run_monthly.py --execute                    # place the planned orders after reviewing the report
+uv run run_monthly.py                              # monthly check (dry run): report in data/reports/
+uv run run_monthly.py --execute                    # alpaca: place the orders; robinhood: record the month after placing the ticket
 uv run run_monthly.py --first-trading-day-only     # for schedulers: runs the check only on the month's first trading day
 ```
 
-`--deploy-all` (with `--execute`) is a one-time option that buys every selected stock up to its full target at once, instead of building positions over six months.
+`--broker alpaca|robinhood` overrides `BROKER` for one run. `--deploy-all` (with `--execute`) is a one-time option that buys every selected stock up to its full target at once, instead of building positions over six months.
 
 Re-run steps 1–2 every January (the full re-screen).
 
 ### Monthly check
 
-The bot is built to run once a month, on the first trading day at about 10:30 ET. The monthly check is a dry run that reports dividends received, sector weights, the order plan and any alerts, and places nothing until you run `--execute`. [docs/MONTHLY_CHECK.md](docs/MONTHLY_CHECK.md) explains the report and how to schedule it with cron, Windows Task Scheduler or a Claude scheduled task.
+The bot is built to run once a month, on the first trading day at about 10:30 ET. The monthly check is a dry run that reports dividends received, sector weights, the order plan and any alerts, and places nothing until you run `--execute`. [docs/MONTHLY_CHECK.md](docs/MONTHLY_CHECK.md) explains the report and how to schedule it with cron, Windows Task Scheduler or an AI agent.
 
 ## Choices in this version
 

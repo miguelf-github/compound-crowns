@@ -27,6 +27,10 @@ RUN_SCHEDULE            = first trading day of each month, 10:30 ET (monthly che
 FULL_RESCREEN           = every January run (or first run ever)
 ```
 
+## BROKERS
+- **Alpaca paper** (`BROKER=alpaca`): the bot places orders through Alpaca's API. Paper money only; the rules below apply as written.
+- **Robinhood** (`BROKER=robinhood`, real money): the bot reads holdings from `data/robinhood_holdings.csv`, applies the same rules, and writes an order ticket to `data/orders/`. It never places orders itself; the user, or an agent the user connected to Robinhood and approved, places exactly the ticket. Dividends are real, so the dividend ledger and reserve aren't used; keep DRIP off in Robinhood.
+
 ## HARD SAFETY RULES (check every run, in this order)
 1. Call `get_account_info`. Confirm this is a **paper** account (Alpaca paper account numbers start with `PA`). If you cannot confirm paper, **STOP, place no orders**, and report why.
 2. **Individual common stocks only.** Never buy ETFs, mutual funds, closed-end funds, or any other pooled product (e.g., SCHD, NOBL, VIG, SPY), not even to park cash or fill gaps. Uninvested money stays as cash until the rules deploy it into selected stocks. Benchmark tickers exist only for measuring performance and are never traded.
