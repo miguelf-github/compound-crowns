@@ -69,15 +69,20 @@ Selection takes the best-scoring company in each sector that has an eligible Cha
 ## Usage
 
 ```bash
-uv run build_universe.py          # step 1: data/universe.csv (+ excluded list with reasons)
-uv run compute_crown_scores.py         # step 2: data/crown_scores.csv and a 30-stock selection preview
-uv run run_monthly.py             # dry run: report in data/reports/, places nothing
-uv run run_monthly.py --execute   # place the planned orders (market must be open)
+uv run build_universe.py                           # step 1: data/universe.csv (+ excluded list with reasons)
+uv run compute_crown_scores.py                     # step 2: data/crown_scores.csv and a 30-stock selection preview
+uv run run_monthly.py                              # monthly check (dry run): report in data/reports/, places nothing
+uv run run_monthly.py --execute                    # place the planned orders after reviewing the report
+uv run run_monthly.py --first-trading-day-only     # for schedulers: runs the check only on the month's first trading day
 ```
 
 `--deploy-all` (with `--execute`) is a one-time option that buys every selected stock up to its full target at once, instead of building positions over six months.
 
-Re-run steps 1–2 every January (the full re-screen); run step 3 on the first trading day of each month.
+Re-run steps 1–2 every January (the full re-screen).
+
+### Monthly check
+
+The bot is built to run once a month, on the first trading day at about 10:30 ET. The monthly check is a dry run that reports dividends received, sector weights, the order plan and any alerts, and places nothing until you run `--execute`. [docs/MONTHLY_CHECK.md](docs/MONTHLY_CHECK.md) explains the report and how to schedule it with cron, Windows Task Scheduler or a Claude scheduled task.
 
 ## Choices in this version
 

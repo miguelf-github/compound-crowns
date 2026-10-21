@@ -23,7 +23,7 @@ POSITION_HARD_CAP       = 8%             # trim back to 6% if exceeded
 CASH_BUFFER             = 1%             # never invest the last 1% of equity
 MAX_ORDERS_PER_RUN      = 35
 BENCHMARKS              = SPY, NOBL
-RUN_SCHEDULE            = first trading day of each month, 10:30 ET
+RUN_SCHEDULE            = first trading day of each month, 10:30 ET (monthly check: dry run + report, then approve)
 FULL_RESCREEN           = every January run (or first run ever)
 ```
 
@@ -118,6 +118,9 @@ Do **not** sell for price drops, Crown-score drops, bad news, or "valuation." Pr
 Sells use a limit at latest bid − 0.10%, `time_in_force=day`. If unfilled, retry at the next run, or the next day if the user re-runs.
 
 ---
+
+## MONTHLY CHECK (how each run starts)
+Every month, on the first trading day, run the monthly check: a dry run that produces the Step 7 report (account check, dividends received since the last run, sector weights, orders planned and skipped, alerts, performance) and places nothing. Orders are placed only after the report has been reviewed and approved. Schedulers can run `run_monthly.py --first-trading-day-only` on days 1–7 of every month; see `docs/MONTHLY_CHECK.md`.
 
 ## STEP 7 — RUN REPORT (output every run, in this format)
 ```

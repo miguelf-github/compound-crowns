@@ -98,6 +98,12 @@ class Alpaca:
 
     def account(self):        return self.get(f"{TRADING}/account")
     def clock(self):          return self.get(f"{TRADING}/clock")
+
+    def first_trading_day(self, today):
+        """The first trading day of today's month, from Alpaca's market calendar."""
+        days = self.get(f"{TRADING}/calendar", start=today.replace(day=1).isoformat(),
+                        end=(today.replace(day=1) + timedelta(days=10)).isoformat())
+        return date.fromisoformat(days[0]["date"]) if days else None
     def positions(self):      return {p["symbol"]: p for p in self.get(f"{TRADING}/positions")}
     def asset(self, sym):     return self.get(f"{TRADING}/assets/{sym.replace('-', '.')}")
 
@@ -258,6 +264,8 @@ def main():
     ap.add_argument("--deploy-all", action="store_true",
                     help="one-time: buy every selected stock up to its full target now, skipping the DCA spread, "
                          "the value overlay and the per-run spending cap (user-approved initial deployment)")
+    ap.add_argument("--first-trading-day-only", action="store_true",
+                    help="exit quietly unless today is the month's first trading day (for daily schedulers)")
     ap.add_argument("--allow-second-run", action="store_true",
                     help="allow a second executed run in the same calendar month")
     args = ap.parse_args()
@@ -272,6 +280,13 @@ def main():
     now_utc = datetime.now(timezone.utc)
     today = date.today()
     notes, skipped, alerts, data_flags = [], [], [], []
+
+    if args.first_trading_day_only:
+        market_today = datetime.now(ZoneInfo("America/New_York")).date()
+        first = api.first_trading_day(market_today)
+        if first != market_today:
+            print(f"Not the first trading day of the month (that's {first}); nothing to do.")
+            return
 
     # --- hard safety rules 1 and 4 ---
     acct = api.account()
