@@ -98,6 +98,8 @@ Set `ACCOUNT_TYPE` in `.env`. It decides which kinds of dividend payers are elig
 
 REITs and BDCs pay mostly **ordinary** (non-qualified) dividends, which are taxed at your income-tax rate in a taxable account instead of the lower qualified-dividend rate. Inside a tax-advantaged account that difference doesn't apply, so they're allowed. MLPs are always excluded because they issue K-1 tax forms. After changing `ACCOUNT_TYPE`, re-run `build_universe.py` and `compute_crown_scores.py`. This is general information, not tax advice.
 
+Even when they're allowed, few REITs and BDCs survive the methodology. REITs must pay out most of their income and BDCs pay variable dividends, so few have raised their dividend every year for 25 years, and the long-streak REITs that do exist are often below the size cut. BDCs as an industry are too young for 25-year streaks. To own one anyway, add it as a [Court Pick](#dethroned-regents-and-court-picks).
+
 ## Data sources
 
 - **Dividend Champions list:** the U.S. Dividend Champions spreadsheet published by [Dividend Growth Investor](https://www.dividendgrowthinvestor.com/). Download it yourself into `data/raw/` (it isn't redistributed here).
