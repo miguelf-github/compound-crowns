@@ -31,7 +31,7 @@ Robinhood has no official stock-trading API for scripts, so in Robinhood mode th
 
 | Step | Script | What it does |
 |---|---|---|
-| 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Any company trading on a US exchange is eligible, wherever it's based. Drops REITs, MLPs, OTC stocks and everything below the median market cap. |
+| 1. Universe | `build_universe.py` | Starts from the U.S. Dividend Champions list (25+ years of increases), plus manual additions. Any company trading on a US exchange is eligible, wherever it's based. Always drops MLPs (K-1s) and OTC stocks; drops REITs and BDCs in taxable accounts; then drops everything below the median market cap. |
 | 2. Score | `compute_crown_scores.py` | Scores each company up to 15 on streak length, size, international sales, 5- and 10-year dividend growth, yield, and payout ratio (dividends ÷ free cash flow). |
 | 3–8. Run | `run_monthly.py` | Picks the 30 (best name in every sector first, max 5 per sector), sizes buys, checks sell rules, checks dividends, and writes a run report. Alpaca: places limit orders. Robinhood: writes the order ticket. |
 
@@ -80,11 +80,23 @@ Alpaca paper accounts don't pay dividends. Each run rebuilds a ledger from Alpac
 
 ## Sectors
 
-The strategy aims to hold every GICS sector, listed in `SECTORS_TO_HOLD` in `compute_crown_scores.py`:
+The strategy aims to hold every GICS sector except Real Estate, listed in `SECTORS_TO_HOLD` in `compute_crown_scores.py`:
 
-Communication Services · Consumer Discretionary · Consumer Staples · Energy · Financials · Health Care · Industrials · Information Technology · Materials · Real Estate · Utilities
+Communication Services · Consumer Discretionary · Consumer Staples · Energy · Financials · Health Care · Industrials · Information Technology · Materials · Utilities
 
 Selection takes the best-scoring company in each sector that has an eligible Champion, then fills the remaining slots by Crown-score, at most 5 per sector. Which companies qualify changes over time, so the bot rebuilds the picture every January. A sector with no eligible company stays empty rather than relaxing the rules. Remove a sector from the list to keep it out entirely.
+
+## Taxable or tax-advantaged account
+
+Set `ACCOUNT_TYPE` in `.env`. It decides which kinds of dividend payers are eligible:
+
+| | `ACCOUNT_TYPE=taxable` (default) | `ACCOUNT_TYPE=tax_advantaged` (IRA, 401(k) and similar) |
+|---|---|---|
+| REITs (Real Estate sector) | Excluded | Eligible; Real Estate is added to the sectors to hold |
+| BDCs (business development companies) | Excluded | Eligible |
+| MLPs and other partnerships | Excluded | Excluded |
+
+REITs and BDCs pay mostly **ordinary** (non-qualified) dividends, which are taxed at your income-tax rate in a taxable account instead of the lower qualified-dividend rate. Inside a tax-advantaged account that difference doesn't apply, so they're allowed. MLPs are always excluded because they issue K-1 tax forms. After changing `ACCOUNT_TYPE`, re-run `build_universe.py` and `compute_crown_scores.py`. This is general information, not tax advice.
 
 ## Data sources
 

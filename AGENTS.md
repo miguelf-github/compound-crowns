@@ -5,7 +5,7 @@ You are operating **Compound Crowns**, a buy-and-hold dividend growth bot. It ho
 ## Setup (once)
 
 1. Install [uv](https://docs.astral.sh/uv/). The scripts declare their own dependencies.
-2. `cp .env.example .env`, then ask the user for the values. **Never ask the user to paste keys into chat; have them edit `.env` themselves.**
+2. `cp .env.example .env`, then ask the user for the values, including whether the account is taxable or tax-advantaged (`ACCOUNT_TYPE`). **Never ask the user to paste keys into chat; have them edit `.env` themselves.**
 3. Download the current U.S. Dividend Champions spreadsheet into `data/raw/` (see README).
 4. For Robinhood: copy `examples/robinhood_holdings.example.csv` to `data/robinhood_holdings.csv` and fill in holdings and a `CASH` row.
 5. `uv run check_setup.py` until everything is `[ok]`.

@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 
-from compute_crown_scores import MAX_PER_SECTOR, SECTORS_TO_HOLD, TARGET_POSITIONS, dividend_flags, select_portfolio
+from compute_crown_scores import MAX_PER_SECTOR, TARGET_POSITIONS, dividend_flags, sectors_to_hold, select_portfolio
 
 ROOT = Path(__file__).parent
 CSCORES = ROOT / "data" / "crown_scores.csv"
@@ -312,7 +312,7 @@ def replacement(scores, sector, selected_syms, sold_syms):
         if r["symbol"] in selected_syms:
             per_sector[r["sector"]] = per_sector.get(r["sector"], 0) + 1
     pool = [r for r in scores if r["symbol"] not in selected_syms and r["symbol"] not in sold_syms
-            and r["sector"] in SECTORS_TO_HOLD and not r.get("blocked")]
+            and r["sector"] in sectors_to_hold() and not r.get("blocked")]
     same = next((r for r in pool if r["sector"] == sector), None)
     return same or next((r for r in pool if per_sector.get(r["sector"], 0) < MAX_PER_SECTOR), None)
 

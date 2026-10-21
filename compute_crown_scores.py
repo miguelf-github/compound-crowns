@@ -42,8 +42,9 @@ CACHE_DAYS = 7
 INTL_SALES_FACTOR = True
 TARGET_POSITIONS = 30
 MAX_PER_SECTOR = 5
-# The 11 GICS sectors the strategy wants to hold. Selection takes the best-scoring name in each listed sector
+# The GICS sectors the strategy wants to hold. Selection takes the best-scoring name in each listed sector
 # that has an eligible company, then fills the rest by score. Remove a sector here to keep it out entirely.
+# Real Estate is added only for tax-advantaged accounts (see ACCOUNT_TYPE below).
 SECTORS_TO_HOLD = [
     "Communication Services",
     "Consumer Discretionary",
@@ -54,9 +55,22 @@ SECTORS_TO_HOLD = [
     "Industrials",
     "Information Technology",
     "Materials",
-    "Real Estate",
     "Utilities",
 ]
+
+
+def tax_advantaged():
+    """ACCOUNT_TYPE in .env: 'taxable' (default) or 'tax_advantaged' (IRA, 401(k) and similar).
+
+    REITs and BDCs pay mostly ordinary (non-qualified) dividends, taxed at higher rates in a taxable account,
+    so they are excluded by default. In a tax-advantaged account that difference doesn't apply, so they become
+    eligible and Real Estate joins the sectors to hold. MLPs and other K-1 issuers stay excluded either way.
+    """
+    return os.getenv("ACCOUNT_TYPE", "taxable").strip().lower() == "tax_advantaged"
+
+
+def sectors_to_hold():
+    return SECTORS_TO_HOLD + (["Real Estate"] if tax_advantaged() else [])
 FREEZE_MONTHS = 15
 MAX_DPS_AGE_DAYS = 270  # older SEC per-share dividend data counts as missing
 # Yield rule (very low yields take too long to compound into meaningful income). A company yielding
@@ -465,7 +479,7 @@ def select_portfolio(ranked):
 
     Companies blocked by the yield rule are skipped.
     """
-    pool = [r for r in ranked if r["sector"] in SECTORS_TO_HOLD and not r.get("blocked")]
+    pool = [r for r in ranked if r["sector"] in sectors_to_hold() and not r.get("blocked")]
     selected, per_sector = [], {}
     for r in pool:
         if r["sector"] not in per_sector:

@@ -25,6 +25,8 @@ import openpyxl
 import requests
 from dotenv import load_dotenv
 
+from compute_crown_scores import tax_advantaged
+
 ROOT = Path(__file__).parent
 CHAMPIONS_FILE = ROOT / "data" / "raw" / "2026_Dividend_Champions.01.xlsx"
 CHAMPIONS_SHEET = "Dividend Champions for 2026"
@@ -35,6 +37,7 @@ OUT_EXCLUDED = ROOT / "data" / "universe_excluded.csv"
 MAX_UNIVERSE = 150
 LISTED_EXCHANGES = {"NYSE", "NASDAQ", "AMEX", "NYSE AMERICAN"}
 PARTNERSHIP_RE = re.compile(r"\b(L\.?P\.?|Partners)\b", re.IGNORECASE)
+BDC_RE = re.compile(r"\bBDC\b|business development", re.IGNORECASE)
 
 FMP_STABLE = "https://financialmodelingprep.com/stable/profile"
 FMP_V3 = "https://financialmodelingprep.com/api/v3/profile/{symbol}"
@@ -131,10 +134,15 @@ def exclusion_reason(champ, p):
     if p.get("isEtf") or p.get("isFund"):
         return "pooled product (ETF/fund)"
     # Any company trading on a US exchange is eligible, including ones based or primarily listed abroad.
-    if champ["sector"] == "Real Estate" or p.get("sector") == "Real Estate" or "REIT" in (p.get("industry") or ""):
-        return "REIT"
+    # MLPs and other partnerships issue K-1s: always excluded, whatever the account type.
     if PARTNERSHIP_RE.search(champ["company"] or "") or PARTNERSHIP_RE.search(p.get("companyName") or ""):
         return "partnership/MLP (K-1 issuer)"
+    # REITs and BDCs pay mostly ordinary (non-qualified) dividends: excluded unless ACCOUNT_TYPE=tax_advantaged.
+    if not tax_advantaged():
+        if champ["sector"] == "Real Estate" or p.get("sector") == "Real Estate" or "REIT" in (p.get("industry") or ""):
+            return "REIT (ordinary dividends; taxable account)"
+        if BDC_RE.search(f"{champ['company'] or ''} {p.get('companyName') or ''} {p.get('industry') or ''}"):
+            return "BDC (ordinary dividends; taxable account)"
     if p.get("isActivelyTrading") is False:
         return "not actively trading"
     exchange = (p.get("exchangeShortName") or p.get("exchange") or "").upper()

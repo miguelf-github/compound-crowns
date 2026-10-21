@@ -38,6 +38,9 @@ def main():
     broker = (os.getenv("BROKER", "") or "alpaca").strip().lower()
     check(broker in ("alpaca", "robinhood"), f"BROKER is alpaca or robinhood (now: {broker})",
           "set BROKER=alpaca (paper trading) or BROKER=robinhood (ticket mode) in .env")
+    account = (os.getenv("ACCOUNT_TYPE", "") or "taxable").strip().lower()
+    check(account in ("taxable", "tax_advantaged"), f"ACCOUNT_TYPE is taxable or tax_advantaged (now: {account})",
+          "set ACCOUNT_TYPE=taxable (REITs/BDCs excluded) or tax_advantaged (IRA/401(k): REITs/BDCs allowed)")
     check(bool(os.getenv("FMP_API_KEY", "").strip()), "FMP_API_KEY is set",
           "free key at https://financialmodelingprep.com/ (used for company profiles)")
     ua = os.getenv("SEC_USER_AGENT", "").strip()
